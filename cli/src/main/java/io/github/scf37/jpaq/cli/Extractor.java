@@ -5,10 +5,13 @@ import io.github.scf37.jpaq.libzpaq.Decompresser;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
 import io.github.scf37.jpaq.libzpaq.Sha1;
 import io.github.scf37.jpaq.libzpaq.ZpaqException;
+import io.github.scf37.jpaq.libzpaq.ZpaqReader;
 import io.github.scf37.jpaq.libzpaq.ZpaqWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.locks.ReentrantLock;
 
 /** The "extract" command. */
@@ -35,7 +38,13 @@ final class Extractor {
     double maxMemory;        // largest memory used by any block (test mode)
     long totalSize;          // bytes to extract
     long totalDone;          // bytes extracted so far
+    BlockingQueue<Fed> fed;  // compressed blocks read in order (storage without random access)
   }
+
+  /** A compressed block read from the archive, ready to be decompressed. */
+  private record Fed(Block block, byte[] data) {}
+
+  private static final Fed END = new Fed(null, null);
 
   /** Streaming output destination. */
   private static final class OutputFile implements ZpaqWriter {
@@ -145,16 +154,17 @@ final class Extractor {
       if (j.files.size() > 0 || j.tofiles.size() > 0 || j.onlyfiles.size() > 0 || j.noattributes
           || j.version != Jidac.DEFAULT_VERSION || !j.method.isEmpty())
         throw ZpaqException.error("-repack -all does not allow partial copy");
-      InputArchive in = new InputArchive(j.archive, j.password);
-      if (j.force) Fs.deleteFile(j.repack);
-      if (Fs.exists(j.repack)) throw ZpaqException.error("output file exists");
+      InputArchive in = j.openArchive();
+      j.io.checkWritable();
+      if (j.force) j.io.delete(j.repack);
+      if (j.io.exists(j.repack)) throw ZpaqException.error("output file exists");
 
       // Get key and salt
       byte[] salt = new byte[32];
       if (j.newPassword != null) Crypto.random(salt, 32);
 
       // Copy
-      OutputArchive out = new OutputArchive(j.repack, j.newPassword, salt, 0);
+      OutputArchive out = new OutputArchive(j.io, j.repack, j.newPassword, salt, 0);
       copy(in, out);
       Console.print(j.archive);
       Console.printf(" %1.0f ", in.tell() + .0);
@@ -166,7 +176,7 @@ final class Extractor {
     }
 
     // Read archive
-    final long sz = j.readArchive(j.archive, null);
+    final long sz = j.readArchive(j.fromIndex() ? j.readIndex : j.archive, null);
     if (sz < 1) throw ZpaqException.error("archive not found");
 
     // test blocks
@@ -259,6 +269,15 @@ final class Extractor {
     Console.printf("Extracting %1.6f MB in %d files -threads %d\n", job.totalSize / 1000000.0,
         totalFiles, j.threads);
     List<Thread> tid = new ArrayList<>();
+    Thread feeder = null;
+    if (!j.io.random) {
+      // The archive can only be read front to back: one thread reads the blocks to decompress in
+      // order and hands them to the workers
+      job.fed = new ArrayBlockingQueue<>(Math.max(j.threads, 1));
+      feeder = new Thread(() -> feedBlocks(job), "read-blocks");
+      feeder.setDaemon(true);
+      feeder.start();
+    }
     for (int i = 0; i < j.threads; i++) {
       Thread t = new Thread(() -> decompressThread(job), "decompress-" + i);
       t.setDaemon(true);
@@ -268,7 +287,7 @@ final class Extractor {
 
     // Extract streaming files
     int segments = 0;  // count
-    InputArchive in = new InputArchive(j.archive, j.password);
+    InputArchive in = j.openArchive();
     if (in.isOpen()) {
       ArchiveFile outf = null;
       DT dtptr = null;
@@ -359,6 +378,7 @@ final class Extractor {
 
     // Wait for threads to finish
     for (Thread t : tid) joinThread(t);
+    if (feeder != null) joinThread(feeder);
 
     // Create empty directories and set file dates and attributes
     if (!j.dotest) {
@@ -412,20 +432,22 @@ final class Extractor {
   /** Creates an index of the archive (extract -index). */
   private int createIndex(long sz) {
     if (j.ver.size() < 2) throw ZpaqException.error("no journaling data");
-    if (j.force) Fs.deleteFile(j.index);
-    if (Fs.exists(j.index)) throw ZpaqException.error("index file exists");
+    if (j.io.probe) {  // without PROBE an existing index is simply replaced
+      if (j.force) j.io.delete(j.index);
+      if (j.io.exists(j.index)) throw ZpaqException.error("index file exists");
+    }
 
     // Get salt
     byte[] salt = new byte[32];
     if (j.ver.get(1).offset == 32) {  // encrypted?
-      ArchiveFile fp = ArchiveFile.openRead(Strs.subpart(j.archive, 1), null);
+      ArchiveIo.In fp = j.io.openRead(Strs.subpart(j.archive, 1), null);
       if (fp == null) throw ZpaqException.error("cannot read part 1");
       if (fp.read(salt, 0, 32) != 32) throw ZpaqException.error("cannot read salt");
       salt[0] ^= '7' ^ 'z';  // for index
       fp.close();
     }
-    InputArchive in = new InputArchive(j.archive, j.password);
-    OutputArchive out = new OutputArchive(j.index, j.password, salt, 0);
+    InputArchive in = j.openArchive();
+    OutputArchive out = new OutputArchive(j.io, j.index, j.password, salt, 0);
     for (int i = 1; i < j.ver.size(); ++i) {
       Ver v = j.ver.get(i);
       if (in.tell() != v.offset) throw ZpaqException.error("I'm lost");
@@ -473,6 +495,9 @@ final class Extractor {
 
     // Get total D block size
     if (j.ver.size() < 2) throw ZpaqException.error("cannot repack streaming archive");
+    if (j.readDialect == io.github.scf37.jpaq.libzpaq.Dialect.JPAQ)
+      throw ZpaqException.error("cannot repack a jpaq sequential archive");
+    j.io.checkWritable();
     long csize = 0;  // total compressed size of D blocks
     for (Block b : block) {
       if (b.bsize < 1) throw ZpaqException.error("empty block");
@@ -480,14 +505,14 @@ final class Extractor {
     }
 
     // Open input
-    InputArchive in = new InputArchive(j.archive, j.password);
+    InputArchive in = j.openArchive();
 
     // Open output
-    if (!j.force && Fs.exists(j.repack)) throw ZpaqException.error("repack output exists");
-    Fs.deleteFile(j.repack);
+    if (!j.force && j.io.exists(j.repack)) throw ZpaqException.error("repack output exists");
+    j.io.delete(j.repack);
     byte[] salt = new byte[32];
     if (j.newPassword != null) Crypto.random(salt, 32);
-    OutputArchive out = new OutputArchive(j.repack, j.newPassword, salt, 0);
+    OutputArchive out = new OutputArchive(j.io, j.repack, j.newPassword, salt, 0);
     long cstart = out.tell();
 
     // Write C block using first version date
@@ -587,6 +612,79 @@ final class Extractor {
     }
   }
 
+  /** Reads the compressed blocks that are needed, in archive order, into job.fed. */
+  private void feedBlocks(ExtractJob job) {
+    try (InputArchive fin = j.openArchive()) {
+      for (Block b : j.block) {
+        if (!(b.size > 0 && b.usize >= 0)) continue;
+        job.mutex.lock();
+        try {
+          if (b.state != Block.State.READY) continue;
+          b.state = Block.State.WORKING;
+        } finally {
+          job.mutex.unlock();
+        }
+        try {
+          if (b.bsize > Integer.MAX_VALUE - 16) throw ZpaqException.error("block too big");
+          fin.seek(b.offset, InputArchive.Whence.SET);
+          byte[] data = new byte[(int) b.bsize];
+          int n = 0;
+          while (n < data.length) {
+            int r = fin.read(data, n, data.length - n);
+            if (r <= 0) break;
+            n += r;
+          }
+          if (n < data.length) data = java.util.Arrays.copyOf(data, n);
+          putFed(job, new Fed(b, data));
+        } catch (RuntimeException | OutOfMemoryError ex) {
+          job.mutex.lock();
+          try {
+            Console.eprintf("read block at %1.0f: %s\n", b.offset + 0.0, Jidac.what(ex));
+          } finally {
+            job.mutex.unlock();
+          }
+        }
+      }
+    } catch (RuntimeException ex) {
+      job.mutex.lock();
+      try {
+        Console.eprint("read blocks: " + Jidac.what(ex) + "\n");
+      } finally {
+        job.mutex.unlock();
+      }
+    } finally {
+      for (int i = 0; i < Math.max(j.threads, 1); i++) putFed(job, END);
+    }
+  }
+
+  private static void putFed(ExtractJob job, Fed f) {
+    boolean interrupted = false;
+    while (true) {
+      try {
+        job.fed.put(f);
+        break;
+      } catch (InterruptedException ex) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) Thread.currentThread().interrupt();
+  }
+
+  private static Fed takeFed(ExtractJob job) {
+    boolean interrupted = false;
+    try {
+      while (true) {
+        try {
+          return job.fed.take();
+        } catch (InterruptedException ex) {
+          interrupted = true;
+        }
+      }
+    } finally {
+      if (interrupted) Thread.currentThread().interrupt();
+    }
+  }
+
   private void decompressBlocks(ExtractJob job) {
     final List<Block> block = j.block;
     int jobNumber;
@@ -600,14 +698,21 @@ final class Extractor {
     }
 
     // Open archive for reading
-    InputArchive in = new InputArchive(j.archive, j.password);
-    if (!in.isOpen()) return;
+    InputArchive in = job.fed != null ? null : j.openArchive();
+    if (in != null && !in.isOpen()) return;
     MemoryBuffer out = new MemoryBuffer();
 
     // Look for next READY job.
     int next = 0;  // current job
     while (true) {
       Block b = null;
+      ZpaqReader src = in;
+      if (job.fed != null) {
+        Fed f = takeFed(job);
+        if (f == END) return;
+        b = f.block();
+        src = ZpaqReader.of(f.data());
+      } else {
       job.mutex.lock();
       try {
         for (int i = 0; i <= block.size(); ++i) {
@@ -625,6 +730,7 @@ final class Extractor {
       } finally {
         job.mutex.unlock();
       }
+      }
 
       // Get uncompressed size of block
       long outputSize = 0;  // minimum size to decompress
@@ -633,9 +739,9 @@ final class Extractor {
       // Decompress
       double[] mem = {0};  // how much memory used to decompress
       try {
-        in.seek(b.offset, InputArchive.Whence.SET);
+        if (in != null) in.seek(b.offset, InputArchive.Whence.SET);
         Decompresser d = new Decompresser();
-        d.setInput(in);
+        d.setInput(src);
         out.resize(0);
         out.setLimit(b.usize);
         d.setOutput(out);

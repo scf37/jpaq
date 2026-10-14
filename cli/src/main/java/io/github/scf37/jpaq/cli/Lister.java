@@ -26,7 +26,10 @@ final class Lister {
 
     // Read archive into dt, which may be "" for empty.
     long csize = 0;
-    if (!j.archive.isEmpty()) csize = j.readArchive(j.archive, null);
+    if (!j.archive.isEmpty() || j.fromIndex()) {
+      j.readArchive(j.fromIndex() ? j.readIndex : j.archive, null);
+      csize = j.virtualEnd;
+    }
 
     // Read external files into edt
     for (String f : j.files) j.scandir(f);

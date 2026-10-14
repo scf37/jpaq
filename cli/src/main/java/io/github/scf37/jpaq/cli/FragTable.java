@@ -41,6 +41,11 @@ final class FragTable {
     usize[size++] = u;
   }
 
+  /** Removes all entries from index n on. */
+  void truncate(int n) {
+    if (n < size) size = Math.max(n, 1);
+  }
+
   int usize(int i) {
     return usize[i];
   }
