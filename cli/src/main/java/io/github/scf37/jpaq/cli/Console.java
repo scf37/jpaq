@@ -14,11 +14,17 @@ import java.nio.charset.StandardCharsets;
 final class Console {
   private Console() {}
 
-  static final PrintStream out = new PrintStream(
+  static volatile PrintStream out = new PrintStream(
       new BufferedOutputStream(new FileOutputStream(FileDescriptor.out), 1 << 16), false,
       StandardCharsets.ISO_8859_1);
-  static final PrintStream err = new PrintStream(
+  static volatile PrintStream err = new PrintStream(
       new FileOutputStream(FileDescriptor.err), true, StandardCharsets.ISO_8859_1);
+
+  /** Redirects standard output and error (used by tests and embedders). */
+  static void setStreams(PrintStream newOut, PrintStream newErr) {
+    out = newOut;
+    err = newErr;
+  }
 
   /** printf to stdout. */
   static void printf(String format, Object... args) {
