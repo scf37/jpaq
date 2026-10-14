@@ -4,7 +4,7 @@ DT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$DT/../.." && pwd)
 BUILD=${BUILD:-$DT/build}                      # reference binaries (see build-ref.sh)
 WORK=${WORK:-$BUILD/work}                      # scratch directory with the R/ and J/ trees
-JAVA=${JAVA:-java}
+JAVA=${JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}
 CP=${CP:-$ROOT/libzpaq/target/classes:$ROOT/cli/target/classes:$ROOT/cli/target/test-classes:$BUILD/classes}
 export LC_ALL=C.UTF-8
 unset JAVA_TOOL_OPTIONS
