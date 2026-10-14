@@ -15,6 +15,8 @@ final class FragmentScanner {
   final byte[] o1 = new byte[256];  // order 1 context -> predicted byte
   int sz;                   // fragment size
   long hits;                // correct prediction count
+  int text1;                // 1 if the last analyzed fragment looks like text
+  int exe1;                 // 1 if it looks like x86 code
 
   private final byte[] buf = new byte[BUFSIZE];
   private int bufptr;
@@ -90,5 +92,45 @@ final class FragmentScanner {
     }
     sha1.write(fragbuf, 0, sz);
     return c;
+  }
+
+  /**
+   * Analyzes a fragment (order 1 table {@code o1}, size {@code sz}, {@code hits} correct
+   * predictions) for redundancy, x86 and text. Returns the redundancy estimate and sets
+   * {@link #text1} and {@link #exe1}. Test for text: letters, digits, '.' and ',' followed by
+   * spaces and no invalid UTF-8. Test for exe: 139 (mov reg, r/m) in lots of contexts. 4 tests for
+   * redundancy, measured as hits/sz. Take the highest of:
+   *   1. Successful prediction count in o1.
+   *   2. Non-uniform distribution in o1 (counted in o2).
+   *   3. Fraction of zeros in o1 (bytes never seen).
+   *   4. Fraction of matches between o1 and previous o1 (o1prev).
+   */
+  long analyze(byte[] o1, int sz, long hits, byte[] o1prev, int on, int[] dtTable) {
+    int text = 0;
+    int exe = 0;
+    long h1 = sz;
+    int[] o1ct = new int[256];  // counts of bytes in o1
+    for (int i = 0; i < 256; ++i) {
+      final int o1i = o1[i] & 255;
+      if (o1ct[o1i] < 255) h1 -= ((long) sz * dtTable[o1ct[o1i]++]) >> 15;
+      if (o1i == ' ' && (Strs.isalnum(i) || i == '.' || i == ',')) ++text;
+      if (o1i != 0 && (i < 9 || i == 11 || i == 12 || (i >= 14 && i <= 31) || i >= 240)) --text;
+      if (i >= 192 && i < 240 && o1i != 0 && (o1i < 128 || o1i >= 192)) --text;
+      if (o1i == 139) ++exe;
+    }
+    text1 = text >= 3 ? 1 : 0;
+    exe1 = exe >= 5 ? 1 : 0;
+    if (sz > 0) h1 = h1 * h1 / sz;  // Test 2: near 0 if random.
+    long h2 = h1 & 0xFFFFFFFFL;
+    if (h2 > hits) hits = h2;
+    h2 = (long) o1ct[0] * sz / 256;  // Test 3: bytes never seen or that predict 0.
+    if (h2 > hits) hits = h2;
+    h2 = 0;
+    for (int i = 0; i < 256 * on; ++i)  // Test 4: compare to previous o1.
+      h2 += o1prev[i] == o1[i & 255] ? 1 : 0;
+    h2 = h2 * sz / (256 * on);
+    if (h2 > hits) hits = h2;
+    if (hits > sz) hits = sz;
+    return hits;
   }
 }
