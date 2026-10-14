@@ -79,13 +79,35 @@ public final class Main {
     return runBytes(r);
   }
 
-  /** Runs with arguments as byte strings; argv[0] is the program name. */
+  /**
+   * Runs the command line with archive files in {@code io} and options set by {@code configure}
+   * after the arguments were parsed. Not safe to call concurrently.
+   */
+  static int run(Path workDir, ArchiveIo io, java.util.function.Consumer<Jidac> configure,
+      String[] args) {
+    Fs.setWorkingDirectory(workDir);
+    try {
+      String[] r = new String[args.length + 1];
+      r[0] = "zpaq";
+      for (int i = 0; i < args.length; i++) r[i + 1] = Strs.toBytes(args[i]);
+      return runBytes(r, io, configure);
+    } finally {
+      Fs.setWorkingDirectory(null);
+    }
+  }
+
   private static int runBytes(String[] argv) {
+    return runBytes(argv, null, null);
+  }
+
+  /** Runs with arguments as byte strings; argv[0] is the program name. */
+  private static int runBytes(String[] argv, ArchiveIo io, java.util.function.Consumer<Jidac> cfg) {
     Jidac.globalStart = Jidac.mtime();
     int errorcode;
     try {
-      Jidac jidac = new Jidac(new ArchiveIo(new LocalFsStorage(Fs.workingDirectory()),
-          Format.CLASSIC));
+      Jidac jidac = new Jidac(io != null ? io
+          : new ArchiveIo(new LocalFsStorage(Fs.workingDirectory()), Format.CLASSIC));
+      jidac.configure = cfg;
       errorcode = jidac.doCommand(argv);
     } catch (ExitException e) {
       Console.flush();

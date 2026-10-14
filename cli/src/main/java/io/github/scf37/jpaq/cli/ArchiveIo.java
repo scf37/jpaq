@@ -139,6 +139,9 @@ final class ArchiveIo {
 
     abstract long length();
 
+    /** Carries out a pending seek, so that tell() reports the end of a short file. */
+    void settle() {}
+
     @Override
     public abstract void close();
   }
@@ -198,30 +201,93 @@ final class ArchiveIo {
     }
   }
 
-  /** Input from a stream; seeking forward discards, seeking back (or far ahead) reopens. */
+  /**
+   * Input from a stream, opened when first read. Seeking forward discards (or reopens at the
+   * offset if the storage can read ranges and the gap is large), seeking back a little replays
+   * bytes that were just read, other backward seeks reopen.
+   */
   private static final class StreamIn extends In {
     private static final long REOPEN_GAP = 1 << 20;  // ranged reads pay off above this skip
+    private static final int HISTORY = 1 << 16;
     private final ArchiveIo io;
     private final String name;
-    private InputStream in;
-    private long pos;
+    private InputStream in;     // null until needed
+    private long pos;           // logical position
+    private long streamPos;     // position of `in`
+    private final byte[] hist = new byte[HISTORY];  // last bytes read from `in`, ring buffer
+    private long openPos;       // position at which `in` was opened
+    private byte[] replay;      // bytes to return before reading `in` again
+    private int replayOff;
 
-    StreamIn(ArchiveIo io, String name) throws IOException {
+    StreamIn(ArchiveIo io, String name) {
       this.io = io;
       this.name = name;
-      this.in = io.st.read(real(name));
+    }
+
+    private void closeStream() {
+      if (in != null) {
+        try {
+          in.close();
+        } catch (IOException e) {
+          // ignored
+        }
+        in = null;
+      }
+      replay = null;
+    }
+
+    /** Opens the stream at the logical position. */
+    private void ensureStream() throws IOException {
+      if (in != null) return;
+      if (pos > 0 && io.ranged) {
+        in = io.st.read(real(name), pos);
+        streamPos = pos;
+      } else {
+        in = io.st.read(real(name));
+        streamPos = 0;
+        skipStream(pos);
+      }
+      openPos = streamPos;
+    }
+
+    private int readStream(byte[] buf, int off, int len) throws IOException {
+      int r = in.read(buf, off, len);
+      if (r > 0) {
+        for (int i = 0; i < r; i++) hist[(int) ((streamPos + i) & (HISTORY - 1))] = buf[off + i];
+        streamPos += r;
+      }
+      return r;
+    }
+
+    /** Reads and drops until streamPos == p or end of file. */
+    private void skipStream(long p) throws IOException {
+      byte[] skip = new byte[1 << 16];
+      while (streamPos < p) {
+        int r = readStream(skip, 0, (int) Math.min(skip.length, p - streamPos));
+        if (r <= 0) break;
+      }
+      pos = Math.min(pos, streamPos);
     }
 
     @Override
     int read(byte[] buf, int off, int len) {
       try {
+        ensureStream();
         int total = 0;
         while (total < len) {
-          int r = in.read(buf, off + total, len - total);
-          if (r <= 0) break;
+          int r;
+          if (replay != null) {
+            r = Math.min(len - total, replay.length - replayOff);
+            System.arraycopy(replay, replayOff, buf, off + total, r);
+            replayOff += r;
+            if (replayOff == replay.length) replay = null;
+          } else {
+            r = readStream(buf, off + total, len - total);
+            if (r <= 0) break;
+          }
           total += r;
+          pos += r;
         }
-        pos += total;
         return total;
       } catch (IOException e) {
         throw new UncheckedIOException(e);
@@ -230,25 +296,51 @@ final class ArchiveIo {
 
     @Override
     void seekSet(long p) {
+      if (p < 0) p = 0;
+      if (p == pos) return;
       try {
-        if (p < 0) p = 0;
-        if (p == pos) return;
-        if (p < pos || (io.ranged && p - pos > REOPEN_GAP)) {
-          in.close();
-          if (io.ranged) {
-            in = io.st.read(real(name), p);
+        if (in == null) {
+          pos = p;  // opened at this position when first read
+          return;
+        }
+        if (p > streamPos) {  // forward past everything read so far
+          replay = null;
+          if (io.ranged && p - streamPos > REOPEN_GAP) {
+            closeStream();
             pos = p;
             return;
           }
-          in = io.st.read(real(name));
-          pos = 0;
+          pos = p;
+          skipStream(p);
+          return;
         }
-        byte[] skip = new byte[1 << 16];
-        while (pos < p) {
-          int r = in.read(skip, 0, (int) Math.min(skip.length, p - pos));
-          if (r <= 0) break;  // end of file: stay at its end
-          pos += r;
+        // p <= streamPos: back (or within what is being replayed); the history has the bytes
+        if (p >= Math.max(openPos, streamPos - HISTORY)) {
+          int n = (int) (streamPos - p);
+          if (n == 0) {
+            replay = null;
+          } else {
+            byte[] r = new byte[n];
+            for (int i = 0; i < n; i++) r[i] = hist[(int) ((p + i) & (HISTORY - 1))];
+            replay = r;
+            replayOff = 0;
+          }
+          pos = p;
+          return;
         }
+        closeStream();
+        pos = p;
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+
+    @Override
+    void settle() {
+      try {
+        if (replay != null) return;
+        ensureStream();
+        if (streamPos < pos) skipStream(pos);
       } catch (IOException e) {
         throw new UncheckedIOException(e);
       }
@@ -266,11 +358,7 @@ final class ArchiveIo {
 
     @Override
     public void close() {
-      try {
-        in.close();
-      } catch (IOException e) {
-        // ignored
-      }
+      closeStream();
     }
   }
 
