@@ -247,4 +247,32 @@ class SeqArchiveTest {
     assertTrue(ranged.log.stream().anyMatch(l -> l.startsWith("read arc002.jpaq @")), ranged.log.toString());
     assertTrue(ranged.log.stream().noneMatch(l -> l.equals("read arc001.jpaq")), ranged.log.toString());
   }
+
+  /** Stock C++ zpaq (set ZPAQ_CPP to its path) must not find anything in jpaq archives. */
+  @Test
+  void stockZpaqSeesNothing(@TempDir Path dir) throws Exception {
+    String bin = System.getenv("ZPAQ_CPP");
+    org.junit.jupiter.api.Assumptions.assumeTrue(bin != null && Files.isExecutable(Path.of(bin)));
+    for (String[] extra : new String[][] {{}, {"-key", "secret"}}) {
+      Path d = Files.createDirectories(dir.resolve("k" + extra.length));
+      MemStorage st = twoVersions(d, extra);
+      Path dump = Files.createDirectories(d.resolve("dump"));
+      for (var e : st.files.entrySet()) Files.write(dump.resolve(e.getKey()), e.getValue());
+      for (String f : new String[] {"arc001.jpaq", "arc002.jpaq", "idx1.jpaq", "idx2.jpaq"}) {
+        for (String cmd : new String[] {"l", "x"}) {
+          String[] args = extra.length == 0 ? new String[] {bin, cmd, f, "-to", "o"}
+              : new String[] {bin, cmd, f, "-to", "o", "-key", "secret"};
+          Process p = new ProcessBuilder(args).directory(dump.toFile()).redirectErrorStream(true).start();
+          String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.ISO_8859_1);
+          int rc = p.waitFor();
+          assertEquals(2, rc, f + " " + cmd + ": " + out);
+          assertTrue(out.contains("archive contains no data") || out.contains("password incorrect"), out);
+          assertFalse(out.contains("versions,") && !out.contains("0 versions"), out);
+        }
+      }
+      try (Stream<Path> s = Files.walk(dump)) {
+        assertEquals(4, s.filter(Files::isRegularFile).count(), "stock zpaq wrote nothing");
+      }
+    }
+  }
 }
