@@ -67,6 +67,7 @@ final class Jidac {
   Format format;                     // format written by add
   String indexOut;                   // sequential format: name of the updated index to write
   String readIndex;                  // extract/list: read the file list from this index instead
+  java.util.function.Consumer<Jidac> configure;  // sets options the command line has no syntax for
   Dialect readDialect;               // block magic of the archive last read, null if none
   long virtualEnd;                   // end of the last archive read, counting D blocks of an index
 
@@ -402,6 +403,8 @@ final class Jidac {
         usage();
       }
     }
+
+    if (configure != null) configure.accept(this);
 
     // Set threads
     if (threads < 1) threads = numberOfProcessors();

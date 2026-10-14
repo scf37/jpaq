@@ -127,6 +127,7 @@ final class InputArchive implements ZpaqReader, AutoCloseable {
         s = fp.length();
       } else {
         fp.seekSet(Long.MAX_VALUE / 2);  // reads to the end
+        fp.settle();
         s = fp.tell();
         fp.seekSet(save);
       }
@@ -142,6 +143,7 @@ final class InputArchive implements ZpaqReader, AutoCloseable {
 
   private static long readThrough(ArchiveIo.In f) {
     f.seekSet(Long.MAX_VALUE / 2);
+    f.settle();
     return f.tell();
   }
 
@@ -150,7 +152,7 @@ final class InputArchive implements ZpaqReader, AutoCloseable {
     if (nparts >= 0 && partIdx + 1 >= nparts) return false;
     final String next = Strs.subpart(fn, partIdx + 2);
     if (next.equals(part0)) return false;
-    ArchiveIo.In f = openNext(next);
+    ArchiveIo.In f = openNext(next, nparts >= 0);
     if (f == null) {
       nparts = partIdx + 1;
       return false;
@@ -165,7 +167,12 @@ final class InputArchive implements ZpaqReader, AutoCloseable {
 
   /** Opens the next part if it exists; failures to open an existing part are errors. */
   private ArchiveIo.In openNext(String name) {
-    if (!io.exists(name)) return null;
+    return openNext(name, false);
+  }
+
+  /** @param known the part is known to exist (it is counted in nparts), so no probing */
+  private ArchiveIo.In openNext(String name, boolean known) {
+    if (!known && !io.exists(name)) return null;
     Exception[] err = new Exception[1];
     ArchiveIo.In f = io.openRead(name, err);
     if (f == null) throw ioerr(name, err[0]);
@@ -232,12 +239,13 @@ final class InputArchive implements ZpaqReader, AutoCloseable {
       if (s < 0) {
         // Size unknown (stream): move within the part and see whether it is long enough
         fp.seekSet(off - partStart);
+        fp.settle();
         if (fp.tell() >= off - partStart) return;
         s = fp.tell();
         setSize(partIdx, s);
       }
       if (partStart + s > off) break;
-      ArchiveIo.In f = openNext(next);
+      ArchiveIo.In f = openNext(next, nparts >= 0);
       if (f == null) {
         nparts = partIdx + 1;
         break;
