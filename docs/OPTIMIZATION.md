@@ -104,6 +104,8 @@ Tried and dropped (no gain beyond noise, or slower):
   `LzBuffer.fill` copied to locals.
 * Touching the hash table rows of all ICM/ISSE components in advance ("prefetch").
 * 16 byte stores instead of `Arrays.fill` in `PredOps.find`.
+* `PredOps.find` loading all three probe check bytes up front: m3 4.4-4.7 s vs 4.8-5.0 s, m4 unchanged
+  (12.1-12.5 s either way), i.e. noise; not kept.
 * `MemorySegment` (64 byte aligned, off-heap) instead of `byte[]` for the ICM/ISSE tables: about
   15 % slower with the current JDK. The array alignment does matter though: shifting all rows by
   0/16/32/48 bytes changes the `-m4` time by +-8 %, depending on where the JVM happens to put the
