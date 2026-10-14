@@ -1,7 +1,6 @@
 #!/bin/bash
 . "$(dirname "$0")/../common.sh"
 D=$DT/diffrun.sh
-mod() { (cd $WORK/R && eval "$@") ; (cd $WORK/J && eval "$@"); }
 export SOURCE_DATE_EPOCH=1735689600
 echo "== index (real)"
 $DT/reset.sh
