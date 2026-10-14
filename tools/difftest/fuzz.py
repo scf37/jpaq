@@ -15,13 +15,13 @@ def gen(kind,size):
         while n<size:
             w=rnd.choice(words)+(' ' if rnd.random()<0.9 else '\n'); out.append(w); n+=len(w)
         return ''.join(out).encode()[:size]
-    if kind=='rand': return bytes(rnd.getrandbits(8) for _ in range(min(size,1<<14)))*max(1,size//(1<<14)) if rnd.random()<0.3 else os.urandom(size)
+    if kind=='rand': return bytes(rnd.getrandbits(8) for _ in range(min(size,1<<14)))*max(1,size//(1<<14)) if rnd.random()<0.3 else rnd.randbytes(size)
     if kind=='zeros': return bytes(size)
     if kind=='pattern':
         p=bytes(rnd.getrandbits(8) for _ in range(rnd.randint(1,300)))
         return (p*(size//len(p)+1))[:size]
     if kind=='x86':
-        b=bytearray(os.urandom(size))
+        b=bytearray(rnd.randbytes(size))
         for i in range(0,max(0,size-5),rnd.randint(8,40)):
             b[i]=rnd.choice([0xe8,0xe9]); b[i+4]=rnd.choice([0,255]); 
         return bytes(b)
@@ -57,6 +57,12 @@ def rm(rel):
         p=os.path.join(W,d,rel)
         if os.path.isdir(p): shutil.rmtree(p)
         elif os.path.exists(p): os.remove(p)
+def fixdirs():
+    # directory modification times are stored in the archive: make them identical in R and J
+    # (they would otherwise differ by the few milliseconds between creating the two trees)
+    for d in ('R','J'):
+        for dp,dn,fn in os.walk(os.path.join(W,d,'data'),topdown=False):
+            os.utime(dp,(base_time,base_time))
 def listfiles():
     r=[]
     for dp,dn,fn in os.walk(W+'/R/data'):
@@ -68,7 +74,10 @@ def run(label,*args,fixed=False):
     p=subprocess.run([DT+'/diffrun.sh',label]+list(args),capture_output=True,text=True,env=env)
     out=p.stdout.strip()
     if not out.startswith('OK'):
-        print('FAIL seed=%d step=%s: %s\n%s'%(seed,label,' '.join(args),out)); 
+        print('FAIL seed=%d step=%s: %s\n%s'%(seed,label,' '.join(args),out))
+        keep=W+'.fail.%d'%seed
+        shutil.rmtree(keep,ignore_errors=True)
+        shutil.copytree(W,keep,symlinks=True)   # keep the trees for inspection
         return False
     return True
 # init
@@ -78,6 +87,7 @@ for i in range(rnd.randint(3,12)):
     rel='data/%s%s%d.%s'%(d,rnd.choice(['f','file','X','Q']),i,rnd.choice(exts))
     mkfile(rel,gen(rnd.choice(kinds),rsize()),base_time+rnd.randint(0,10**6))
 mkdirs('data/emptydir',0)
+fixdirs()
 date=20240101000000
 epoch=1704067200
 mode=rnd.choice(['single','single','multi','index'])
@@ -126,6 +136,7 @@ for st in range(steps):
                     for d in ('R','J'): os.utime(os.path.join(W,d,f),(tt,tt))
                 elif c=='rename':
                     nf='data/mv_%d.%s'%(rnd.randint(0,999),rnd.choice(exts)); mkfile(nf,data,base_time+rnd.randint(0,10**7)); rm(f)
+            fixdirs()
     elif act=='ext' and arcs>0:
         args=['x',arcname,'-to','out%d'%st]+keyargs
         r=rnd.random()

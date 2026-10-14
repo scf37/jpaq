@@ -1,7 +1,6 @@
 #!/bin/bash
 . "$(dirname "$0")/../common.sh"
 D=$DT/diffrun.sh
-mod() { (cd $WORK/R && eval "$@") ; (cd $WORK/J && eval "$@"); }
 U=20250101000000
 $DT/reset.sh
 $D "add base" a t.zpaq tree -until $U

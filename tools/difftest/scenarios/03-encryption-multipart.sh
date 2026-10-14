@@ -1,7 +1,6 @@
 #!/bin/bash
 . "$(dirname "$0")/../common.sh"
 D=$DT/diffrun.sh
-mod() { (cd $WORK/R && eval "$@") ; (cd $WORK/J && eval "$@"); }
 echo "== encryption"
 $DT/reset.sh
 $D "enc add" a e.zpaq tree -key pw1 -until 20250101000000

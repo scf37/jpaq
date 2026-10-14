@@ -1,7 +1,6 @@
 #!/bin/bash
 . "$(dirname "$0")/../common.sh"
 D=$DT/diffrun.sh
-mod() { (cd $WORK/R && eval "$@") ; (cd $WORK/J && eval "$@"); }
 U=20250101000000
 echo "== x methods / streaming"
 for m in x4.1.5.0.3.22 x4.3ci1 x4.0ci1.1.1.1.2amm x6.2.12.0.7.25.1c0.0.511i2 x4.7ci1 s s0 s4 i; do

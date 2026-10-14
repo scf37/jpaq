@@ -285,6 +285,16 @@ public final class Compressor {
     return verify ? sha1result : null;
   }
 
+  /** Size of the postprocessed output verified so far (with {@link #setVerify(boolean)}). */
+  public long getSize() {
+    return sha1.usize();
+  }
+
+  /** SHA-1 of the postprocessed output verified so far; resets the size to 0. */
+  public byte[] getChecksum() {
+    return sha1.result();
+  }
+
   /** Ends the block. */
   public void endBlock() {
     enc.out.put(255);

@@ -67,7 +67,8 @@ Differences from the C++ program:
   are not implemented.
 * Block sizes larger than the largest Java array limit (about 2 GiB, and less for models that need
   more than 2^31 elements) are rejected with an out-of-memory error.
-* The help text does not mention the "Java port" beyond the banner line.
+* The banner line says "Java port" instead of the compile date; the `-DDEBUG` help for advanced
+  options of the C++ debug build is not included (the options themselves work).
 
 ## Library
 
@@ -139,6 +140,7 @@ The code is structured so that the hot paths can be optimized without changing t
 (predictor components → struct-of-arrays and specialization per model, ZPAQL → bytecode
 generation via the class-file API, bulk I/O, off-heap tables). Because the output must remain
 byte-identical, the golden and differential tests above are the safety net for that work.
+[docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) has the baseline numbers and the list of hot spots.
 
 ## License
 

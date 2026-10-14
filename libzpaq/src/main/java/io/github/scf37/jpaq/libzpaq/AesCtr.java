@@ -51,6 +51,23 @@ public final class AesCtr {
     b[o + 3] = (byte) v;
   }
 
+  /**
+   * Encrypts one block: the plaintext {@code s0 s1 s2 s3} (4 32-bit words, first byte of plaintext
+   * in the high 8 bits of s0) to {@code ct[0..15]}.
+   */
+  public void encrypt(int s0, int s1, int s2, int s3, byte[] ct) {
+    byte[] block = new byte[16];
+    putBe32(block, 0, s0);
+    putBe32(block, 4, s1);
+    putBe32(block, 8, s2);
+    putBe32(block, 12, s3);
+    try {
+      cipher.update(block, 0, 16, ct, 0);
+    } catch (GeneralSecurityException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
   /** Encrypts or decrypts {@code buf[off..off+n-1]} which sits at stream position {@code offset}. */
   public void encrypt(byte[] buf, int off, int n, long offset) {
     if (n <= 0) return;
