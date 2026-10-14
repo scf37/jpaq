@@ -8,7 +8,7 @@ import java.util.Arrays;
  */
 final class Predictor {
   /** One model component with its state. */
-  private static final class Component {
+  static final class Component {
     int type;
     int c1;
     int c2;
@@ -25,13 +25,21 @@ final class Predictor {
     char[] a16;
   }
 
-  private int c8 = 1;     // last 0...7 bits with a leading 1
-  private int hmap4 = 1;  // c8 split into nibbles
-  private final int[] p = new int[256];  // predictions
-  private final int[] h = new int[256];  // unrolled copy of z.h
+  /** Generated predict / update code specialized for one model. */
+  interface Code {
+    int predict(Predictor pr);
+
+    void update(Predictor pr, int y);
+  }
+
+  int c8 = 1;     // last 0...7 bits with a leading 1
+  int hmap4 = 1;  // c8 split into nibbles
+  final int[] p = new int[256];  // predictions
+  final int[] h = new int[256];  // unrolled copy of z.h
   private final Zpaql z;
-  private final Component[] comp = new Component[256];
+  final Component[] comp = new Component[256];
   private int n;
+  private Code code;
 
   Predictor(Zpaql z) {
     this.z = z;
@@ -82,6 +90,8 @@ final class Predictor {
     Arrays.fill(h, 0);
     Arrays.fill(p, 0);
     Arrays.fill(comp, null);
+    c8 = 1;
+    hmap4 = 1;
     n = z.header[6] & 255;
     final byte[] hd = z.header;
     int cp = 7;
@@ -162,10 +172,12 @@ final class Predictor {
       }
       cp += Components.size(type);
     }
+    code = PredictorJit.get(z.header, n);
   }
 
   /** Returns the probability that the next bit is a 1 (0..32767). */
   int predict() {
+    if (code != null) return code.predict(this);
     final int n = this.n;
     final int c8 = this.c8;
     final int hmap4 = this.hmap4;
@@ -175,78 +187,26 @@ final class Predictor {
       final Component cr = comp[i];
       switch (cr.type) {
         case Components.CONS -> { }
-        case Components.CM -> {
-          cr.cxt = h[i] ^ hmap4;
-          p[i] = stretch(cr.cm[cr.cxt & (cr.cm.length - 1)] >>> 17);
-        }
-        case Components.ICM -> {
-          if (c8 == 1 || (c8 & 0xf0) == 16) cr.c = find(cr.ht, cr.c1 + 2, h[i] + 16 * c8);
-          cr.cxt = cr.ht[cr.c + (hmap4 & 15)] & 255;
-          p[i] = stretch(cr.cm[cr.cxt] >>> 8);
-        }
-        case Components.MATCH -> {
-          if (cr.a == 0) {
-            p[i] = 0;
-          } else {
-            byte[] ht = cr.ht;
-            cr.c = ((ht[(cr.limit - cr.b) & (ht.length - 1)] & 255) >> (7 - cr.cxt)) & 1;
-            p[i] = stretch(Tables.SDT2K[cr.a] * (cr.c * -2 + 1) & 32767);
-          }
-        }
-        case Components.AVG ->
-            p[i] = (p[cr.c1] * cr.c3 + p[cr.c2] * (256 - cr.c3)) >> 8;
-        case Components.MIX2 -> {
-          cr.cxt = (h[i] + (c8 & cr.c5)) & (cr.c - 1);
-          int w = cr.a16[cr.cxt];
-          p[i] = (w * p[cr.c2] + (65536 - w) * p[cr.c3]) >> 16;
-        }
-        case Components.MIX -> {
-          int m = cr.c3;
-          cr.cxt = h[i] + (c8 & cr.c5);
-          cr.cxt = (cr.cxt & (cr.c - 1)) * m;
-          int[] wt = cr.cm;
-          int base = cr.cxt;
-          int s = 0;
-          int pj = cr.c2;
-          for (int j = 0; j < m; j++) s += (wt[base + j] >> 8) * p[pj + j];
-          p[i] = clamp2k(s >> 8);
-        }
-        case Components.ISSE -> {
-          if (c8 == 1 || (c8 & 0xf0) == 16) cr.c = find(cr.ht, cr.c1 + 2, h[i] + 16 * c8);
-          cr.cxt = cr.ht[cr.c + (hmap4 & 15)] & 255;
-          int[] wt = cr.cm;
-          p[i] = clamp2k((wt[cr.cxt * 2] * p[cr.c2] + wt[cr.cxt * 2 + 1] * 64) >> 16);
-        }
-        case Components.SSE -> {
-          final int mask = cr.cm.length - 1;
-          cr.cxt = (h[i] + c8) * 32;
-          int pq = p[cr.c2] + 992;
-          if (pq < 0) pq = 0;
-          if (pq > 1983) pq = 1983;
-          int wt = pq & 63;
-          pq >>= 6;
-          cr.cxt += pq;
-          p[i] = stretch((((cr.cm[cr.cxt & mask] >>> 10) * (64 - wt))
-              + ((cr.cm[(cr.cxt + 1) & mask] >>> 10) * wt)) >> 13);
-          cr.cxt += wt >> 5;
-        }
+        case Components.CM -> PredOps.predictCm(cr, p, h, i, hmap4);
+        case Components.ICM -> PredOps.predictIcm(cr, p, h, i, c8, hmap4);
+        case Components.MATCH -> PredOps.predictMatch(cr, p, i);
+        case Components.AVG -> PredOps.predictAvg(cr, p, i);
+        case Components.MIX2 -> PredOps.predictMix2(cr, p, h, i, c8);
+        case Components.MIX -> PredOps.predictMix(cr, p, h, i, c8);
+        case Components.ISSE -> PredOps.predictIsse(cr, p, h, i, c8, hmap4);
+        case Components.SSE -> PredOps.predictSse(cr, p, h, i, c8);
         default -> throw ZpaqException.error("component predict not implemented");
       }
     }
-    return squash(p[n - 1]);
-  }
-
-  // Reduce prediction error in cr.cm[cr.cxt]
-  private static void train(Component cr, int y) {
-    int idx = cr.cxt & (cr.cm.length - 1);
-    int pn = cr.cm[idx];
-    int count = pn & 0x3ff;
-    int error = y * 32767 - (pn >>> 17);
-    cr.cm[idx] = pn + ((error * Tables.SDT[count] & -1024) + (count < cr.limit ? 1 : 0));
+    return PredOps.squash(p[n - 1]);
   }
 
   /** Updates the model with the coded bit y (0 or 1). */
   void update(int y) {
+    if (code != null) {
+      code.update(this, y);
+      return;
+    }
     final int n = this.n;
     final int hmap4 = this.hmap4;
     final int[] p = this.p;
@@ -254,75 +214,30 @@ final class Predictor {
     for (int i = 0; i < n; i++) {
       final Component cr = comp[i];
       switch (cr.type) {
-        case Components.CONS -> { }
-        case Components.CM -> train(cr, y);
-        case Components.ICM -> {
-          int hi = cr.c + (hmap4 & 15);
-          cr.ht[hi] = (byte) Tables.SNS[(cr.ht[hi] & 255) * 4 + y];
-          int pn = cr.cm[cr.cxt];
-          cr.cm[cr.cxt] = pn + ((y * 32767 - (pn >>> 8)) >> 2);
-        }
-        case Components.MATCH -> {
-          byte[] ht = cr.ht;
-          final int hmask = ht.length - 1;
-          if (cr.c != y) cr.a = 0;
-          ht[cr.limit] = (byte) ((ht[cr.limit] & 255) * 2 + y);
-          if (++cr.cxt == 8) {
-            cr.cxt = 0;
-            ++cr.limit;
-            cr.limit &= (1 << cr.c2) - 1;
-            int[] cm = cr.cm;
-            int ci = h[i] & (cm.length - 1);
-            if (cr.a == 0) {
-              cr.b = cr.limit - cm[ci];
-              if ((cr.b & hmask) != 0) {
-                while (cr.a < 255
-                    && ht[(cr.limit - cr.a - 1) & hmask] == ht[(cr.limit - cr.a - cr.b - 1) & hmask])
-                  ++cr.a;
-              }
-            } else if (cr.a < 255) {
-              cr.a++;
-            }
-            cm[ci] = cr.limit;
-          }
-        }
-        case Components.AVG -> { }
-        case Components.MIX2 -> {
-          int err = ((y * 32767 - squash(p[i])) * cr.c4) >> 5;
-          int w = cr.a16[cr.cxt];
-          w += (err * (p[cr.c2] - p[cr.c3]) + (1 << 12)) >> 13;
-          if (w < 0) w = 0;
-          if (w > 65535) w = 65535;
-          cr.a16[cr.cxt] = (char) w;
-        }
-        case Components.MIX -> {
-          int m = cr.c3;
-          int err = ((y * 32767 - squash(p[i])) * cr.c4) >> 4;
-          int[] wt = cr.cm;
-          int base = cr.cxt;
-          int pj = cr.c2;
-          for (int j = 0; j < m; j++)
-            wt[base + j] = clamp512k(wt[base + j] + ((err * p[pj + j] + (1 << 12)) >> 13));
-        }
-        case Components.ISSE -> {
-          int err = y * 32767 - squash(p[i]);
-          int[] wt = cr.cm;
-          int w0 = cr.cxt * 2;
-          wt[w0] = clamp512k(wt[w0] + ((err * p[cr.c2] + (1 << 12)) >> 13));
-          wt[w0 + 1] = clamp512k(wt[w0 + 1] + ((err + 16) >> 5));
-          cr.ht[cr.c + (hmap4 & 15)] = (byte) Tables.SNS[cr.cxt * 4 + y];
-        }
-        case Components.SSE -> train(cr, y);
+        case Components.CONS, Components.AVG -> { }
+        case Components.CM -> PredOps.updateCm(cr, y);
+        case Components.ICM -> PredOps.updateIcm(cr, y, hmap4);
+        case Components.MATCH -> PredOps.updateMatch(cr, h, i, y);
+        case Components.MIX2 -> PredOps.updateMix2(cr, p, i, y);
+        case Components.MIX -> PredOps.updateMix(cr, p, i, y);
+        case Components.ISSE -> PredOps.updateIsse(cr, p, i, y, hmap4);
+        case Components.SSE -> PredOps.updateSse(cr, y);
         default -> throw new AssertionError();
       }
     }
+    endUpdate(y);
+  }
 
-    // Save bit y in c8, hmap4
+  /** Saves bit y in c8, hmap4 and runs the HCOMP program at the end of a byte. */
+  void endUpdate(int y) {
+    int c8 = this.c8;
+    final int hmap4 = this.hmap4;
     c8 += c8 + y;
     if (c8 >= 256) {
       z.run(c8 - 256);
       this.hmap4 = 1;
       c8 = 1;
+      final int[] h = this.h;
       for (int i = 0; i < n; i++) h[i] = z.h(i);
     } else if (c8 >= 16 && c8 < 32) {
       this.hmap4 = (hmap4 & 0xf) << 5 | y << 4 | 1;
@@ -330,28 +245,5 @@ final class Predictor {
       this.hmap4 = (hmap4 & 0x1f0) | (((hmap4 & 0xf) * 2 + y) & 0xf);
     }
     this.c8 = c8;
-  }
-
-  // Find cxt row in hash table ht. ht has rows of 16 indexed by the low sizebits of cxt with
-  // element 0 having the next higher 8 bits for collision detection. If not found after 3
-  // adjacent tries, replace the row with lowest element 1 as priority. Return index of row.
-  private static int find(byte[] ht, int sizebits, int cxt) {
-    int chk = (cxt >>> sizebits) & 255;
-    int h0 = (cxt << 4) & (ht.length - 16);
-    if ((ht[h0] & 255) == chk) return h0;
-    int h1 = h0 ^ 16;
-    if ((ht[h1] & 255) == chk) return h1;
-    int h2 = h0 ^ 32;
-    if ((ht[h2] & 255) == chk) return h2;
-    int p0 = ht[h0 + 1] & 255;
-    int p1 = ht[h1 + 1] & 255;
-    int p2 = ht[h2 + 1] & 255;
-    int r;
-    if (p0 <= p1 && p0 <= p2) r = h0;
-    else if (p1 < p2) r = h1;
-    else r = h2;
-    Arrays.fill(ht, r, r + 16, (byte) 0);
-    ht[r] = (byte) chk;
-    return r;
   }
 }
