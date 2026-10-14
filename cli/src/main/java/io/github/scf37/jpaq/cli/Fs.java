@@ -32,6 +32,11 @@ final class Fs {
     base = dir;
   }
 
+  /** Directory against which relative names are resolved, or null. */
+  static Path workingDirectory() {
+    return base;
+  }
+
   /** Converts a byte string (UTF-8) to a Path. */
   static Path path(String name) {
     String s = Strs.fromBytes(name);

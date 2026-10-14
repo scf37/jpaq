@@ -1,5 +1,7 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.Format;
+import io.github.scf37.jpaq.api.LocalFsStorage;
 import io.github.scf37.jpaq.libzpaq.ZpaqException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -82,7 +84,8 @@ public final class Main {
     Jidac.globalStart = Jidac.mtime();
     int errorcode;
     try {
-      Jidac jidac = new Jidac();
+      Jidac jidac = new Jidac(new ArchiveIo(new LocalFsStorage(Fs.workingDirectory()),
+          Format.CLASSIC));
       errorcode = jidac.doCommand(argv);
     } catch (ExitException e) {
       Console.flush();

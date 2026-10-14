@@ -1,6 +1,8 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.Format;
 import io.github.scf37.jpaq.libzpaq.Crypto;
+import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.Libzpaq;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
 import io.github.scf37.jpaq.libzpaq.Sha1;
@@ -23,7 +25,7 @@ final class Adder {
   /** For writing to two archives at once. */
   private static final class WriterPair implements ZpaqWriter {
     OutputArchive a;
-    OutputArchive b;
+    ZpaqWriter b;
 
     @Override
     public void put(int c) {
@@ -43,17 +45,22 @@ final class Adder {
    * data.
    */
   static void writeJidacHeader(ZpaqWriter out, long date, long cdata, int htsize) {
+    writeJidacHeader(out, date, cdata, htsize, Dialect.STANDARD);
+  }
+
+  static void writeJidacHeader(ZpaqWriter out, long date, long cdata, int htsize, Dialect dialect) {
     if (out == null) return;
     MemoryBuffer is = new MemoryBuffer();
     Jidac.puti(is, cdata, 8);
     Libzpaq.compressBlock(is, out, "0",
         Strs.getBytes("jDC" + Strs.itos(date, 14) + "c" + Strs.itos(htsize & 0xFFFFFFFFL, 10)),
-        Strs.getBytes("jDC\u0001"), true);
+        Strs.getBytes("jDC\u0001"), true, dialect);
   }
 
   private static void compressJidacBlock(MemoryBuffer is, ZpaqWriter out, String method,
-      String name) {
-    Libzpaq.compressBlock(is, out, method, Strs.getBytes(name), Strs.getBytes("jDC\u0001"), true);
+      String name, Dialect dialect) {
+    Libzpaq.compressBlock(is, out, method, Strs.getBytes(name), Strs.getBytes("jDC\u0001"), true,
+        dialect);
   }
 
   /** Sort by sortkey, then by full path. */
@@ -67,19 +74,35 @@ final class Adder {
     CompressJob[] jobHolder = new CompressJob[1];
     try {
       return add(jobHolder);
+    } catch (RuntimeException | Error e) {
+      if (curOut != null) curOut.abort();  // do not commit a partial tome
+      throw e;
     } finally {
       if (jobHolder[0] != null) jobHolder[0].abort();  // no-op if finished normally
     }
   }
 
+  private OutputArchive curOut;  // tome being written, to abort on failure
+
   private int add(CompressJob[] jobHolder) {
+    final boolean seq = j.format == Format.SEQUENTIAL;
+    final Dialect dialect = seq ? Dialect.JPAQ : Dialect.STANDARD;
+    j.io.checkWritable();
+    if (seq && j.indexOut == null) throw ZpaqException.error("sequential format needs an index");
+
     // Read archive or index into ht, dt, ver.
     int[] errors = {0};
-    final boolean archiveExists = Fs.exists(Strs.subpart(j.archive, 1));
+    final boolean archiveExists = !seq && j.io.exists(Strs.subpart(j.archive, 1));
     String arcname = j.archive;  // input archive name
     if (j.index != null) arcname = j.index;
     long headerPos = 0;
-    if (Fs.exists(Strs.subpart(arcname, 1))) headerPos = j.readArchive(arcname, errors);
+    // Sequential: the caller says whether there is an index; if so it must be readable
+    if (seq ? j.index != null : j.io.exists(Strs.subpart(arcname, 1))) {
+      headerPos = j.readArchive(arcname, errors);
+      if (j.readDialect != null && j.readDialect != dialect)
+        throw ZpaqException.error(seq ? "cannot add to a zpaq format archive in sequential format"
+            : "cannot add to a jpaq sequential archive in zpaq format");
+    }
 
     // Set arcname, offset, header_pos, and salt to open out archive
     arcname = j.archive;  // output file name
@@ -87,18 +110,20 @@ final class Adder {
     byte[] salt = new byte[32];  // encryption salt
     if (j.password != null) Crypto.random(salt, 32);
 
-    if (j.index != null) {  // Remote archive
+    if (j.index != null || seq) {  // Remote archive
       if (j.dcsize > 0) throw ZpaqException.error("index is a regular archive");
       if (j.version != Jidac.DEFAULT_VERSION) throw ZpaqException.error("cannot truncate with an index");
       offset = headerPos + j.dhsize;
       headerPos = 32 * (j.password != null && offset == 0 ? 1 : 0);
       arcname = Strs.subpart(j.archive, j.ver.size());
-      if (Fs.exists(arcname)) {
+      if (!seq && j.io.exists(arcname)) {  // sequential: an unreferenced tome is overwritten
         Console.eprint(arcname + ": archive exists\n");
         throw ZpaqException.error("archive exists");
       }
-      if (j.password != null) {  // derive archive salt from index
-        ArchiveFile fp = ArchiveFile.openRead(j.index, null);
+      if (j.password != null && j.index != null) {  // derive archive salt from index
+        Exception[] serr = new Exception[1];
+        ArchiveIo.In fp = seq || j.io.exists(j.index) ? j.io.openRead(j.index, serr) : null;
+        if (fp == null && seq) throw InputArchive.ioerr(j.index, serr[0]);
         if (fp != null) {
           if (fp.read(salt, 0, 32) != 32) throw ZpaqException.error("cannot read salt from index");
           salt[0] ^= '7' ^ 'z';
@@ -112,7 +137,8 @@ final class Adder {
         for (int i = 1; ; ++i) {
           String partname = Strs.subpart(j.archive, i);
           if (partname.equals(part0)) throw ZpaqException.error("too many archive parts");
-          ArchiveFile fp = ArchiveFile.openRead(partname, null);
+          if (!j.io.exists(partname)) break;
+          ArchiveIo.In fp = j.io.openRead(partname, null);
           if (fp == null) break;
           ++parts;
           offset += fp.length();
@@ -120,12 +146,13 @@ final class Adder {
         }
         headerPos = 32 * (j.password != null && parts == 0 ? 1 : 0);
         arcname = Strs.subpart(j.archive, parts + 1);
-        if (Fs.exists(arcname)) throw ZpaqException.error("part exists");
+        if (j.io.exists(arcname)) throw ZpaqException.error("part exists");
       }
 
       // Get salt from first part if it exists
       if (j.password != null) {
-        ArchiveFile fp = ArchiveFile.openRead(Strs.subpart(j.archive, 1), null);
+        ArchiveIo.In fp = j.io.exists(Strs.subpart(j.archive, 1))
+            ? j.io.openRead(Strs.subpart(j.archive, 1), null) : null;
         if (fp == null) {
           if (headerPos > 32) throw ZpaqException.error("archive first part not found");
           headerPos = 32;
@@ -135,7 +162,7 @@ final class Adder {
         }
       }
     }
-    if (Fs.exists(arcname)) Console.print("Updating ");
+    if (!seq && j.io.exists(arcname)) Console.print("Updating ");
     else Console.print("Creating ");
     Console.print(arcname);
     Console.printf(" at offset %1.0f + %1.0f\n", (double) headerPos, (double) offset);
@@ -149,7 +176,7 @@ final class Adder {
     }
     if ("0123456789xs".indexOf(method.charAt(0)) < 0)
       throw ZpaqException.error("-method must begin with 0..5, x, s");
-    if (method.charAt(0) == 's' && j.index != null)
+    if (method.charAt(0) == 's' && (j.index != null || seq))
       throw ZpaqException.error("cannot index in streaming mode");
 
     // Set block and fragment sizes
@@ -212,16 +239,17 @@ final class Adder {
     vf.sort(COMPARE_FILENAME);
 
     // Test for reliable access to archive
-    if (archiveExists != Fs.exists(Strs.subpart(j.archive, 1)))
+    if (!seq && archiveExists != j.io.exists(Strs.subpart(j.archive, 1)))
       throw ZpaqException.error("archive access is intermittent");
 
     // Open output
-    OutputArchive out = new OutputArchive(arcname, j.password, salt, offset);
+    OutputArchive out = new OutputArchive(j.io, arcname, j.password, salt, offset);
+    curOut = out;
     out.seek(headerPos, InputArchive.Whence.SET);
 
     // Start compress and write jobs
     final int ntid = j.threads * 2 - 1;
-    CompressJob job = new CompressJob(j.threads, ntid, out);
+    CompressJob job = new CompressJob(j.threads, ntid, out, dialect);
     jobHolder[0] = job;
     Console.printf("Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
         totalSize / 1000000.0, vf.size(), method, j.threads, Dates.dateToString(j.date));
@@ -299,7 +327,7 @@ final class Adder {
     final int htsize = j.ht.size();  // fragments at start of update
 
     // reserve space for the header block
-    writeJidacHeader(out, date, -1, htsize);
+    writeJidacHeader(out, date, seq ? 0 : -1, htsize, dialect);  // sequential: never patched
     final long headerEnd = out.tell();
 
     // Compress until end of last file
@@ -468,11 +496,15 @@ final class Adder {
 
     // Open index
     salt[0] ^= '7' ^ 'z';
-    OutputArchive outi = new OutputArchive(j.index != null ? j.index : "", j.password, salt, 0);
+    // Sequential format: the index segment is collected and written after the tome is complete
+    MemoryBuffer indexSegment = seq ? new MemoryBuffer() : null;
+    OutputArchive outi = seq ? null
+        : new OutputArchive(j.io, j.index != null ? j.index : "", j.password, salt, 0);
     WriterPair wp = new WriterPair();
     wp.a = out;
-    if (j.index != null) wp.b = outi;
-    writeJidacHeader(outi, date, 0, htsize);
+    if (seq) wp.b = indexSegment;
+    else if (j.index != null) wp.b = outi;
+    writeJidacHeader(seq ? indexSegment : outi, date, 0, htsize, dialect);
 
     // Append compressed fragment tables to archive
     final long cdatasize = out.tell() - headerEnd;
@@ -488,7 +520,7 @@ final class Adder {
           Jidac.puti(is, j.ht.usize(k), 4);
         }
         compressJidacBlock(is, wp, "0",
-            "jDC" + Strs.itos(date, 14) + "h" + Strs.itos(blocklist.get(i), 10));
+            "jDC" + Strs.itos(date, 14) + "h" + Strs.itos(blocklist.get(i), 10), dialect);
         is.resize(0);
       }
     }
@@ -510,7 +542,7 @@ final class Adder {
         ++removed;
         if (is.size() > 16000) {
           compressJidacBlock(is, wp, "1",
-              "jDC" + Strs.itos(date) + "i" + Strs.itos(++dtcount, 10));
+              "jDC" + Strs.itos(date) + "i" + Strs.itos(++dtcount, 10), dialect);
           is.resize(0);
         }
       }
@@ -558,12 +590,32 @@ final class Adder {
         }
       }
       if (is.size() > 16000 || (is.size() > 0 && p == null)) {
-        compressJidacBlock(is, wp, "1", "jDC" + Strs.itos(date) + "i" + Strs.itos(++dtcount, 10));
+        compressJidacBlock(is, wp, "1", "jDC" + Strs.itos(date) + "i" + Strs.itos(++dtcount, 10),
+            dialect);
         is.resize(0);
       }
       if (p == null) break;
     }
     Console.printf("%d +added, %d -removed.\n", added, removed);
+
+    if (seq) {
+      // Commit the tome first, then the index that refers to it. Nothing is patched.
+      long archiveEnd = out.tell();
+      final boolean noUpdate = added + removed == 0 && archiveEnd - headerPos == 104;
+      if (noUpdate) {
+        if (!out.discard()) out.close();
+        archiveEnd = headerPos;
+      } else {
+        out.close();
+        writeSequentialIndex(indexSegment, salt);
+      }
+      curOut = null;
+      Console.flush();
+      Console.eprintf("\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n", headerPos / 1000000.0,
+          totalSize / 1000000.0, dedupesize / 1000000.0, (archiveEnd - headerPos) / 1000000.0,
+          archiveEnd / 1000000.0);
+      return errors[0] > 0 ? 1 : 0;
+    }
 
     // Back up and write the header
     outi.close();
@@ -573,6 +625,7 @@ final class Adder {
     out.seek(0, InputArchive.Whence.END);
     final long archiveSize = out.tell();
     out.close();
+    curOut = null;
 
     // Truncate empty update from archive (if not indexed)
     if (j.index == null) {
@@ -584,7 +637,7 @@ final class Adder {
               (double) archiveEnd);
           if (!truncate(arcname, archiveEnd)) Fs.printerr(j.archive, "truncate failed");
         } else if (archiveEnd == 0) {
-          if (Fs.deleteFile(arcname)) {
+          if (j.io.delete(arcname)) {
             Console.print("deleted ");
             Console.print(arcname);
             Console.print("\n");
@@ -600,8 +653,8 @@ final class Adder {
   }
 
   /** Truncates filename to length. Returns true on success. */
-  private static boolean truncate(String filename, long length) {
-    ArchiveFile f = ArchiveFile.openUpdate(filename, null);
+  private boolean truncate(String filename, long length) {
+    ArchiveIo.Out f = j.io.openUpdate(filename, null);
     if (f == null) return false;
     try {
       f.truncate(length);
@@ -610,6 +663,40 @@ final class Adder {
       return false;
     } finally {
       f.close();
+    }
+  }
+
+  /**
+   * Writes the updated index of a sequential archive: the old index (if any) copied as it is,
+   * then the segment of this update, under the new index name. Everything is written once, front
+   * to back.
+   */
+  private void writeSequentialIndex(MemoryBuffer segment, byte[] salt) {
+    ArchiveIo.In old = null;
+    if (j.index != null) {
+      Exception[] err = new Exception[1];
+      old = j.io.openRead(j.index, err);
+      if (old == null) throw InputArchive.ioerr(j.index, err[0]);  // it was read before
+    }
+    OutputArchive outi = new OutputArchive(j.io, j.indexOut, j.password, salt, 0);
+    try {
+      if (old != null) {
+        if (j.password != null) {  // the output starts with the same salt
+          byte[] s = new byte[32];
+          if (old.read(s, 0, 32) != 32) throw ZpaqException.error("cannot read salt from index");
+          if (!Arrays.equals(s, salt)) throw ZpaqException.error("index salt mismatch");
+        }
+        byte[] buf = new byte[1 << 16];
+        int n;
+        while ((n = old.read(buf, 0, buf.length)) > 0) outi.writeRaw(buf, 0, n);
+      }
+      outi.write(segment.data(), 0, segment.size());
+      outi.close();
+    } catch (RuntimeException e) {
+      outi.abort();
+      throw e;
+    } finally {
+      if (old != null) old.close();
     }
   }
 

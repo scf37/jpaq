@@ -1,5 +1,6 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.Libzpaq;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
 import io.github.scf37.jpaq.libzpaq.ZpaqWriter;
@@ -37,6 +38,7 @@ final class CompressJob {
   private final int qsize;               // number of elements in q
   private int front;                     // next to remove from queue
   private final ZpaqWriter out;          // archive
+  private final Dialect dialect;         // block magic
   private final Semaphore empty;         // number of empty buffers ready to fill
   private final Semaphore compressors;   // number of compressors available to run
   private final List<Thread> threads = new ArrayList<>();
@@ -46,7 +48,8 @@ final class CompressJob {
   /** Compressed block sizes. */
   final List<Integer> csize = Collections.synchronizedList(new ArrayList<>());
 
-  CompressJob(int nthreads, int buffers, ZpaqWriter f) {
+  CompressJob(int nthreads, int buffers, ZpaqWriter f, Dialect dialect) {
+    this.dialect = dialect;
     qsize = buffers;
     out = f;
     q = new CJ[buffers];
@@ -164,7 +167,7 @@ final class CompressJob {
         if (!acquire(compressors)) return;
         try {
           Libzpaq.compressBlock(cj.in, cj.out, cj.method, Strs.getBytes(cj.filename),
-              cj.comment.isEmpty() ? null : Strs.getBytes(cj.comment), true);
+              cj.comment.isEmpty() ? null : Strs.getBytes(cj.comment), true, dialect);
         } finally {
           // released below
         }

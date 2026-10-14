@@ -1,6 +1,8 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.Format;
 import io.github.scf37.jpaq.libzpaq.Decompresser;
+import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
 import io.github.scf37.jpaq.libzpaq.Sha1;
 import io.github.scf37.jpaq.libzpaq.Sha256;
@@ -60,7 +62,17 @@ final class Jidac {
   /** Time of program start in milliseconds, for progress reports. */
   static long globalStart;
 
-  Jidac() {
+  /** Where archive files are (tomes, parts, index). */
+  final ArchiveIo io;
+  Format format;                     // format written by add
+  String indexOut;                   // sequential format: name of the updated index to write
+  String readIndex;                  // extract/list: read the file list from this index instead
+  Dialect readDialect;               // block magic of the archive last read, null if none
+  long virtualEnd;                   // end of the last archive read, counting D blocks of an index
+
+  Jidac(ArchiveIo io) {
+    this.io = io;
+    this.format = io.format;
     ver.add(new Ver());  // version 0
   }
 
@@ -400,7 +412,7 @@ final class Jidac {
 
     // Adjust negative version
     if (version < 0) {
-      Jidac jidac = new Jidac();
+      Jidac jidac = new Jidac(io);
       jidac.copyOptions(this);
       jidac.version = DEFAULT_VERSION;
       jidac.readArchive(archive, null);
@@ -425,6 +437,8 @@ final class Jidac {
     force = o.force;
     fragment = o.fragment;
     index = o.index;
+    indexOut = o.indexOut;
+    readIndex = o.readIndex;
     password = o.password;
     method = o.method;
     noattributes = o.noattributes;
@@ -465,7 +479,7 @@ final class Jidac {
     int nfiles = 0;  // count
 
     // Open archive
-    InputArchive in = new InputArchive(arc, password);
+    InputArchive in = new InputArchive(io, arc, password);
     if (!in.isOpen()) {
       if (command != 'a') {
         Console.eprint(arc + " not found.\n");
@@ -492,6 +506,7 @@ final class Jidac {
     String lastfile = archive;  // last named file in streaming format
     if (lastfile.length() > 5 && lastfile.endsWith(".zpaq"))
       lastfile = lastfile.substring(0, lastfile.length() - 5);  // drop .zpaq
+    final boolean asIndex = readIndex != null && arc.equals(readIndex);
     long blockOffset = 32 * (password != null ? 1 : 0);  // start of last block of any type
     long dataOffset = blockOffset;  // start of last block of d fragments
     boolean foundData = false;  // exit if nothing found
@@ -503,6 +518,8 @@ final class Jidac {
     // these are in the index blocks, allowing data to be skipped. Otherwise the whole archive is
     // scanned to get this information from the segment headers and trailers.
     boolean done = false;
+    Dialect adia = null;  // block magic of the archive
+    String fatal = null;  // error that ends the scan
     while (!done) {
       Decompresser d = new Decompresser();
       try {
@@ -512,6 +529,15 @@ final class Jidac {
           double[] mem = {0};
           while (d.findBlock(mem)) {
             foundData = true;
+            if (adia == null) {
+              adia = d.dialect();
+            } else if (adia != d.dialect()) {
+              fatal = "cannot mix zpaq and jpaq format blocks in one archive";
+              done = true;
+              break endblock;
+            }
+            final long blockStart = blockOffset;
+            boolean sawD = false;  // block of D data (sequential format)
 
             // Read the segments in the current block
             StringWriter filename = new StringWriter();
@@ -581,8 +607,12 @@ final class Jidac {
                   // Transaction header (type c). If in the future then stop here, else read 8
                   // byte data size from input and jump over it.
                   if (os.size() < 8) throw ZpaqException.error("c block too small");
-                  dataOffset = in.tell() + 1 - d.buffered();
-                  final long jmp = btol(osd, 0);
+                  final long dataOffsetReal = in.tell() + 1 - d.buffered();
+                  // Sequential format: D blocks follow inline and csize is not used. An index has
+                  // no D blocks; positions count them as if they were there.
+                  final long skew = adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0;
+                  dataOffset = dataOffsetReal + skew;
+                  final long jmp = adia == Dialect.JPAQ ? 0 : btol(osd, 0);
                   if (jmp < 0) Console.print("Incomplete transaction ignored\n");
                   if (jmp < 0
                       || (version < 19000000000000L && (long) ver.size() > version)
@@ -591,11 +621,11 @@ final class Jidac {
                     break endblock;
                   } else {
                     dcsize += jmp;
-                    if (jmp != 0) in.seek(dataOffset + jmp, InputArchive.Whence.SET);
+                    if (jmp != 0) in.seek(dataOffsetReal + jmp, InputArchive.Whence.SET);
                     Ver v = new Ver();
                     ver.add(v);
                     v.firstFragment = ht.size();
-                    v.offset = blockOffset;
+                    v.offset = blockOffset + skew;
                     v.dataOffset = dataOffset;
                     v.date = v.lastdate = fdate;
                     v.csize = jmp;
@@ -693,6 +723,8 @@ final class Jidac {
                       dt.put(fn, dtr);
                     }
                   }  // end while more files
+                } else if (btype == 'd' && adia == Dialect.JPAQ && ver.size() > 1) {
+                  sawD = true;  // size is added to csize and dcsize below
                 } else {
                   Console.print("Skipping " + fname + " " + comment.s + "\n");
                   throw ZpaqException.error("Unexpected journaling block");
@@ -737,6 +769,10 @@ final class Jidac {
               first = false;
             }  // end while findFilename
             if (!done) blockOffset = in.tell() - d.buffered();
+            if (sawD) {
+              dcsize += blockOffset - blockStart;
+              ver.get(ver.size() - 1).csize += blockOffset - blockStart;
+            }
           }  // end while findBlock
           done = true;
         }  // endblock
@@ -746,8 +782,22 @@ final class Jidac {
         if (errors != null) ++errors[0];
       }
     }  // end while !done
+    if (fatal != null) throw ZpaqException.error(fatal);
     if (in.tell() > 32 * (password != null ? 1 : 0) && !foundData)
       throw ZpaqException.error("archive contains no data");
+    if (adia == Dialect.JPAQ && ver.size() > 1) {
+      // A transaction that never got its file list was not committed
+      Ver lv = ver.get(ver.size() - 1);
+      if (lv.updates + lv.deletes == 0) {
+        Console.print("Incomplete transaction ignored\n");
+        ver.remove(ver.size() - 1);
+        ht.truncate(lv.firstFragment);
+        while (block.size() > 0 && block.get(block.size() - 1).start >= lv.firstFragment)
+          block.remove(block.size() - 1);
+      }
+    }
+    readDialect = adia;
+    virtualEnd = blockOffset + (adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0);
     Console.printf("%d versions, %d files, %d fragments, %1.6f MB\n", ver.size() - 1, nfiles,
         ht.size() - 1, blockOffset / 1000000.0);
 
@@ -763,6 +813,29 @@ final class Jidac {
     }
     in.close();
     return blockOffset;
+  }
+
+  /** The file list is read from {@link #readIndex}; the archive parts only hold the data. */
+  boolean fromIndex() {
+    return readIndex != null;
+  }
+
+  /** Archive file to read data from: the parts, whose sizes an index knows. */
+  InputArchive openArchive() {
+    return new InputArchive(io, archive, password, partSizes());
+  }
+
+  /** Sizes of the parts of the archive, as told by the index that was read; else null. */
+  List<Long> partSizes() {
+    if (!fromIndex() || ver.size() < 2) return null;
+    List<Long> r = new ArrayList<>();
+    long start = 0;
+    for (int i = 1; i < ver.size(); ++i) {
+      long end = i + 1 < ver.size() ? ver.get(i + 1).offset : virtualEnd;
+      r.add(end - start);
+      start = end;
+    }
+    return r;
   }
 
   /** Message of an exception as reported by e.what(). */
