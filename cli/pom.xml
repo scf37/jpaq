@@ -33,11 +33,34 @@
           <archive>
             <manifest>
               <mainClass>io.github.scf37.jpaq.cli.Main</mainClass>
-              <addClasspath>true</addClasspath>
-              <classpathPrefix>lib/</classpathPrefix>
             </manifest>
           </archive>
         </configuration>
+      </plugin>
+      <!-- Single executable jar: java -jar zpaq.jar a archive files... -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>all</shadedClassifierName>
+              <transformers>
+                <transformer
+                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>io.github.scf37.jpaq.cli.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

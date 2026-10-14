@@ -1,0 +1,21 @@
+#!/bin/sh
+# Launcher for the Java zpaq. Finds jpaq-cli-*-all.jar next to this script (or in ../target)
+# and runs it with sensible JVM options.
+#
+#   zpaq a archive.zpaq files...
+#
+# JAVA_HOME / JAVA_OPTS are honoured. File names that are not plain ASCII need a UTF-8 locale,
+# so one is forced if the current locale is not UTF-8.
+dir=$(cd "$(dirname "$0")" && pwd)
+jar=$(ls "$dir"/zpaq.jar "$dir"/jpaq-cli-*-all.jar "$dir"/../target/jpaq-cli-*-all.jar 2>/dev/null | head -n 1)
+if [ -z "$jar" ]; then
+  echo "zpaq: cannot find jpaq-cli-*-all.jar" >&2
+  exit 2
+fi
+java=java
+[ -n "$JAVA_HOME" ] && java="$JAVA_HOME/bin/java"
+case "${LC_ALL:-${LC_CTYPE:-$LANG}}" in
+  *UTF-8*|*utf8*|*UTF8*|*utf-8*) ;;
+  *) if locale -a 2>/dev/null | grep -qi '^C\.utf-\?8$'; then export LC_ALL=C.UTF-8; fi ;;
+esac
+exec "$java" -XX:+UseParallelGC -XX:MaxRAMPercentage=75 -Xss16m $JAVA_OPTS -jar "$jar" "$@"
