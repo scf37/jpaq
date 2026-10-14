@@ -55,3 +55,52 @@ Extraction speed behaves the same (decompression of `-m5`: 103 s C++, 197 s Java
 the commands above. A JFR recording of a `-m4` run
 (`java -XX:+FlightRecorder -XX:StartFlightRecording=duration=60s,filename=m4.jfr ...`) shows
 `Predictor.predict`/`update` and `Zpaql.execute` as the top frames.
+
+## Optimization log
+
+Each step was measured against the previous one and kept only if the gain was clearly above the
+(considerable, about +-10 %) run to run noise of the shared test machine; the archives stayed
+byte-identical (`mvn verify`, `tools/difftest` scenarios, 300 random ZPAQL programs against the C++
+interpreter). Measured with JDK 25, 4 cores, `-XX:+UseParallelGC`, wall clock, "before" is the
+baseline commit.
+
+Benchmark data: 14 MB (8 MB of the JDK `modules` image, 6 MB of `libjvm.so`, 0.5 MB text; "corpus"),
+12 MB of text (`/usr/include`, docs; "txt", one thread), 173 MB (`modules` + `libjvm.so`; "big").
+
+| step | what | measured effect |
+|------|------|-----------------|
+| 1 | ZPAQL programs (HCOMP / PCOMP) compiled to bytecode with the class-file API (`ZpaqlJit`), interpreter kept as fallback and for programs with unusual jumps | extraction `-m1`/`-m2` of corpus 3.0 s -> 0.6 s (PCOMP runs per output byte); `-m4` compression -8 % |
+| 2 | Per model generated `predict`/`update` (`PredictorJit`): unrolled calls to the component steps in `PredOps` with component numbers, sizes and rates as constants, no per component switch, mixer loops with constant length | corpus `-m4` 32.2 s -> 27.5 s, txt `-m4` 28.5 s -> 17.6 s, txt `-m5` 96 s -> 61 s (C++: 12.4 s / 43.8 s) |
+| 3 | `ArrayPool`: LZ77 hash table / suffix array / inverse suffix array are recycled between blocks (64 MB per block at `-m1` produced 1.5 s of young GC pauses per 173 MB) | big `-m1` 8.6 s -> 7.5 s |
+| 4 | Fragment scanning of `add` moved out of the 5.6 KB `Adder.add` into `FragmentScanner` (tight loop, bulk SHA-1). The huge method was OSR compiled and deoptimized again and again: 3.9 s of C2 time for a 6 s run | big `-m1` 7.5 s -> 5.8 s (C++ 5.9 s); C2 time 3.9 s -> 1.7 s |
+| 5 | SA-IS: suffix types in a bitset (1/8 of the cache footprint) | corpus `-m2` 7.4 s -> 6.7 s |
+| 6 | Generated classes are only created after ~4 KB of input; a model that was compiled before in the same process is used immediately | no cost for tiny inputs |
+
+Current gap to the C++ version (same machine): `-m1` ~1.0x, `-m2` ~1.6x, `-m3` ~1.5x, `-m4`/`-m5`
+~1.4x, extraction like compression. What remains is mostly cache misses (hash table rows of ICM /
+ISSE, LZ77 match search, mixer weight sets) plus the JIT warm-up, which is a fixed ~0.5 s per
+process and block.
+
+Tried and dropped (no gain beyond noise, or slower):
+
+* `Arrays.mismatch` for the LZ77 match length, `System.arraycopy` for literals, fields of
+  `LzBuffer.fill` copied to locals.
+* Touching the hash table rows of all ICM/ISSE components in advance ("prefetch").
+* 16 byte stores instead of `Arrays.fill` in `PredOps.find`.
+* `MemorySegment` (64 byte aligned, off-heap) instead of `byte[]` for the ICM/ISSE tables: about
+  15 % slower with the current JDK. The array alignment does matter though: shifting all rows by
+  0/16/32/48 bytes changes the `-m4` time by +-8 %, depending on where the JVM happens to put the
+  array.
+* Transparent huge pages (`-XX:+UseTransparentHugePages`): no effect here.
+
+## Ideas for later
+
+* **Vector API** (preview, not used yet): the mixers (`PredOps.predictMix` / `updateMix`: dot
+  product of `m` weights with the stretched inputs and the weight update, `m` is typically 5..8
+  and constant in the generated code, so one 256 bit vector suffices), `AVG`/`MIX2` of several
+  components, the E8E9 transform, `Sha1`-free parts of the fragment scan, and the match length
+  comparison in `LzBuffer`. `ISSE` weight pairs are 2 lanes only and not worth it.
+* Parallel decompression of independent blocks inside one file is already done by the extractor;
+  a faster `Decoder` loop (the arithmetic decoder + predictor call chain) has not been looked at.
+* divsufsort port for the suffix array (SA-IS is still ~1.5x slower on 8 MB blocks).
+* Aligned tables (see above) would need either `Unsafe` or a faster `MemorySegment` access path.
