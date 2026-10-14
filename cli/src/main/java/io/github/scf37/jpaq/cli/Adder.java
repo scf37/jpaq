@@ -1,6 +1,8 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.ErrorLine;
 import io.github.scf37.jpaq.api.Format;
+import io.github.scf37.jpaq.api.InfoLine;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.Libzpaq;
@@ -117,7 +119,8 @@ final class Adder {
       headerPos = 32 * (j.password != null && offset == 0 ? 1 : 0);
       arcname = Strs.subpart(j.archive, j.ver.size());
       if (!seq && j.io.exists(arcname)) {  // sequential: an unreferenced tome is overwritten
-        Console.eprint(arcname + ": archive exists\n");
+        Console.emit(new ErrorLine.FileError(arcname, "archive exists", null,
+            arcname + ": archive exists\n"));
         throw ZpaqException.error("archive exists");
       }
       if (j.password != null && j.index != null) {  // derive archive salt from index
@@ -162,10 +165,11 @@ final class Adder {
         }
       }
     }
-    if (!seq && j.io.exists(arcname)) Console.print("Updating ");
-    else Console.print("Creating ");
-    Console.print(arcname);
-    Console.printf(" at offset %1.0f + %1.0f\n", (double) headerPos, (double) offset);
+    final boolean updating = !seq && j.io.exists(arcname);
+    Console.emit(new InfoLine.AddTarget(arcname, !updating, headerPos, offset,
+        (updating ? "Updating " : "Creating ") + arcname
+            + String.format(java.util.Locale.ROOT, " at offset %1.0f + %1.0f\n",
+                (double) headerPos, (double) offset)));
 
     // Set method
     String method = j.method;
@@ -251,8 +255,9 @@ final class Adder {
     final int ntid = j.threads * 2 - 1;
     CompressJob job = new CompressJob(j.threads, ntid, out, dialect);
     jobHolder[0] = job;
-    Console.printf("Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
-        totalSize / 1000000.0, vf.size(), method, j.threads, Dates.dateToString(j.date));
+    Console.emit(new InfoLine.AddPlan(totalSize / 1000000.0, vf.size(), method, j.threads, j.date,
+        String.format(java.util.Locale.ROOT, "Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
+            totalSize / 1000000.0, vf.size(), method, j.threads, Dates.dateToString(j.date))));
 
     // Append in streaming mode. Each file is a separate block. Large files are split into blocks
     // of size blocksize.
@@ -262,9 +267,8 @@ final class Adder {
       for (DT p : vf) {
         Jidac.printProgress(totalSize, totalDone, j.summary);
         if (j.summary <= 0) {
-          Console.print("+ ");
-          Console.print(p.name);
-          Console.printf(" %1.0f\n", p.size + 0.0);
+          Console.emit(new InfoLine.FileAdded(p.name, p.name, false, p.size, -1,
+              String.format(java.util.Locale.ROOT, "+ %s %1.0f\n", p.name, p.size + 0.0)));
         }
         Exception[] err = new Exception[1];
         ArchiveFile in = ArchiveFile.openRead(p.name, err);
@@ -316,8 +320,9 @@ final class Adder {
     // Adjust date to maintain sequential order
     if (j.ver.size() > 0 && j.ver.get(j.ver.size() - 1).lastdate >= j.date) {
       final long newdate = Dates.decimalTime(Dates.unixTime(j.ver.get(j.ver.size() - 1).lastdate) + 1);
-      Console.eprintf("Warning: adjusting date from %s to %s\n", Dates.dateToString(j.date),
-          Dates.dateToString(newdate));
+      Console.emit(new ErrorLine.DateAdjusted(j.date, newdate,
+          String.format(java.util.Locale.ROOT, "Warning: adjusting date from %s to %s\n",
+              Dates.dateToString(j.date), Dates.dateToString(newdate))));
       j.date = newdate;
     }
     final long date = j.date;
@@ -431,8 +436,9 @@ final class Adder {
             String fn = "jDC" + Strs.itos(date, 14) + "d" + Strs.itos(j.ht.size() - frags, 10);
             Jidac.printProgress(totalSize, totalDone, j.summary);
             if (j.summary <= 0)
-              Console.printf("[%d..%d] %d -method %s\n", j.ht.size() - frags, j.ht.size() - 1,
-                  sb.size(), m);
+              Console.emit(new InfoLine.BlockCompressed(j.ht.size() - frags, j.ht.size() - 1,
+                  sb.size(), m, String.format(java.util.Locale.ROOT, "[%d..%d] %d -method %s\n",
+                      j.ht.size() - frags, j.ht.size() - 1, sb.size(), m)));
             if (method.charAt(0) != 'i') {
               job.write(sb, fn, m, null);
             } else {  // index: don't compress data
@@ -475,16 +481,13 @@ final class Adder {
         if (j.summary <= 0) {
           String newname = j.rename(p.name);
           DT a = j.dt.get(newname);
-          if (a == null || a.date == 0) Console.print("+ ");
-          else Console.print("# ");
-          Console.print(p.name);
-          if (!newname.equals(p.name)) {
-            Console.print(" -> ");
-            Console.print(newname);
-          }
-          Console.printf(" %1.0f", p.size + 0.0);
-          if (fsize != p.size) Console.printf(" -> %1.0f", fsize + 0.0);
-          Console.print("\n");
+          final boolean upd = a != null && a.date != 0;
+          StringBuilder t = new StringBuilder(upd ? "# " : "+ ").append(p.name);
+          if (!newname.equals(p.name)) t.append(" -> ").append(newname);
+          t.append(String.format(java.util.Locale.ROOT, " %1.0f", p.size + 0.0));
+          if (fsize != p.size) t.append(String.format(java.util.Locale.ROOT, " -> %1.0f", fsize + 0.0));
+          t.append("\n");
+          Console.emit(new InfoLine.FileAdded(p.name, newname, upd, p.size, fsize, t.toString()));
         }
         in.close();
       }
@@ -535,9 +538,7 @@ final class Adder {
         is.write(nb, 0, nb.length);
         is.put(0);
         if (j.summary <= 0) {
-          Console.print("- ");
-          Console.print(p.name);
-          Console.print("\n");
+          Console.emit(new InfoLine.FileRemoved(p.name, "- " + p.name + "\n"));
         }
         ++removed;
         if (is.size() > 16000) {
@@ -561,14 +562,10 @@ final class Adder {
             || a.size != p.size  // size change
             || (p.data != 0 && !a.samePtr(p)))) {  // content
           if (j.summary <= 0 && p.data == 0) {  // not compressed?
-            if (a == null || a.date == 0) Console.print("+ ");
-            else Console.print("# ");
-            Console.print(p.name);
-            if (!filename.equals(p.name)) {
-              Console.print(" -> ");
-              Console.print(filename);
-            }
-            Console.print("\n");
+            final boolean upd = a != null && a.date != 0;
+            Console.emit(new InfoLine.FileAdded(p.name, filename, upd, -1, -1,
+                (upd ? "# " : "+ ") + p.name
+                    + (filename.equals(p.name) ? "" : " -> " + filename) + "\n"));
           }
           ++added;
           Jidac.puti(is, p.date, 8);
@@ -596,7 +593,8 @@ final class Adder {
       }
       if (p == null) break;
     }
-    Console.printf("%d +added, %d -removed.\n", added, removed);
+    Console.emit(new InfoLine.AddSummary(added, removed,
+        String.format(java.util.Locale.ROOT, "%d +added, %d -removed.\n", added, removed)));
 
     if (seq) {
       // Commit the tome first, then the index that refers to it. Nothing is patched.
@@ -611,9 +609,7 @@ final class Adder {
       }
       curOut = null;
       Console.flush();
-      Console.eprintf("\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n", headerPos / 1000000.0,
-          totalSize / 1000000.0, dedupesize / 1000000.0, (archiveEnd - headerPos) / 1000000.0,
-          archiveEnd / 1000000.0);
+      addResult(headerPos, totalSize, dedupesize, archiveEnd);
       return errors[0] > 0 ? 1 : 0;
     }
 
@@ -633,23 +629,28 @@ final class Adder {
         archiveEnd = headerPos;
       if (archiveEnd < archiveSize) {
         if (archiveEnd > 0) {
-          Console.printf("truncating archive from %1.0f to %1.0f\n", (double) archiveSize,
-              (double) archiveEnd);
+          Console.emit(new InfoLine.ArchiveTruncated(archiveSize, archiveEnd,
+              String.format(java.util.Locale.ROOT, "truncating archive from %1.0f to %1.0f\n",
+                  (double) archiveSize, (double) archiveEnd)));
           if (!truncate(arcname, archiveEnd)) Fs.printerr(j.archive, "truncate failed");
         } else if (archiveEnd == 0) {
           if (j.io.delete(arcname)) {
-            Console.print("deleted ");
-            Console.print(arcname);
-            Console.print("\n");
+            Console.emit(new InfoLine.ArchiveDeleted(arcname, "deleted " + arcname + "\n"));
           }
         }
       }
     }
     Console.flush();
-    Console.eprintf("\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n", headerPos / 1000000.0,
-        totalSize / 1000000.0, dedupesize / 1000000.0, (archiveEnd - headerPos) / 1000000.0,
-        archiveEnd / 1000000.0);
+    addResult(headerPos, totalSize, dedupesize, archiveEnd);
     return errors[0] > 0 ? 1 : 0;
+  }
+
+  private static void addResult(long headerPos, long totalSize, long dedupesize, long archiveEnd) {
+    Console.emit(new InfoLine.AddResult(headerPos, totalSize, dedupesize, archiveEnd - headerPos,
+        archiveEnd,
+        String.format(java.util.Locale.ROOT, "\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n",
+            headerPos / 1000000.0, totalSize / 1000000.0, dedupesize / 1000000.0,
+            (archiveEnd - headerPos) / 1000000.0, archiveEnd / 1000000.0)));
   }
 
   /** Truncates filename to length. Returns true on success. */

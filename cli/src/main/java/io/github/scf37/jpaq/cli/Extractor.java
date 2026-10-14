@@ -1,5 +1,7 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.ErrorLine;
+import io.github.scf37.jpaq.api.InfoLine;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.Decompresser;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
@@ -166,10 +168,8 @@ final class Extractor {
       // Copy
       OutputArchive out = new OutputArchive(j.io, j.repack, j.newPassword, salt, 0);
       copy(in, out);
-      Console.print(j.archive);
-      Console.printf(" %1.0f ", in.tell() + .0);
-      Console.print(j.repack);
-      Console.printf(" -> %1.0f\n", out.tell() + .0);
+      Console.print(j.archive + String.format(java.util.Locale.ROOT, " %1.0f ", in.tell() + .0)
+          + j.repack + String.format(java.util.Locale.ROOT, " -> %1.0f\n", out.tell() + .0));
       out.close();
       in.close();
       return 0;
@@ -211,17 +211,15 @@ final class Extractor {
         final boolean isdir = p.name.charAt(p.name.length() - 1) == '/';
         if (j.repack == null && !j.dotest && j.force && !isdir && equal(p, fn)) {
           if (j.summary <= 0) {  // identical
-            Console.print("= ");
-            Console.print(fn);
-            Console.print("\n");
+            Console.emit(new InfoLine.FileSkipped(fn, InfoLine.FileSkipped.Reason.IDENTICAL,
+                "= " + fn + "\n"));
           }
           Fs.setDateAttr(fn, p.date, p.attr);
           ++skipped;
         } else if (j.repack == null && !j.dotest && !j.force && Fs.exists(fn)) {  // exists, skip
           if (j.summary <= 0) {
-            Console.print("? ");
-            Console.print(fn);
-            Console.print("\n");
+            Console.emit(new InfoLine.FileSkipped(fn, InfoLine.FileSkipped.Reason.EXISTS,
+                "? " + fn + "\n"));
           }
           ++skipped;
         } else if (isdir) {  // update directories later
@@ -233,7 +231,8 @@ final class Extractor {
           for (int i = 0; p.data >= 0 && i < p.ptrSize(); ++i) {
             final int jj = p.ptr(i);  // fragment index
             if (jj == 0 || Integer.compareUnsigned(jj, j.ht.size()) >= 0 || j.ht.usize(jj) < -1) {
-              Console.eprint(p.name + ": bad frag IDs, skipping...\n");
+              Console.emit(new ErrorLine.BadFragments(p.name,
+                  p.name + ": bad frag IDs, skipping...\n"));
               p.data = -1;  // skip
               continue;
             }
@@ -259,15 +258,19 @@ final class Extractor {
       }  // end if selected
     }  // end for
     if (!j.force && skipped > 0)
-      Console.printf("%d ?existing files skipped (-force overwrites).\n", skipped);
-    if (j.force && skipped > 0) Console.printf("%d =identical files skipped.\n", skipped);
+      Console.emit(new InfoLine.SkippedSummary(skipped, false,
+          skipped + " ?existing files skipped (-force overwrites).\n"));
+    if (j.force && skipped > 0)
+      Console.emit(new InfoLine.SkippedSummary(skipped, true,
+          skipped + " =identical files skipped.\n"));
 
     // Repack to new archive
     if (j.repack != null) return repack(sz);
 
     // Decompress archive in parallel
-    Console.printf("Extracting %1.6f MB in %d files -threads %d\n", job.totalSize / 1000000.0,
-        totalFiles, j.threads);
+    Console.emit(new InfoLine.ExtractPlan(job.totalSize / 1000000.0, totalFiles, j.threads,
+        String.format(java.util.Locale.ROOT, "Extracting %1.6f MB in %d files -threads %d\n",
+            job.totalSize / 1000000.0, totalFiles, j.threads)));
     List<Thread> tid = new ArrayList<>();
     Thread feeder = null;
     if (!j.io.random) {
@@ -321,9 +324,7 @@ final class Extractor {
                   job.mutex.lock();
                   try {
                     if (j.summary <= 0) {
-                      Console.print("> ");
-                      Console.print(outname);
-                      Console.print("\n");
+                      Console.emit(new InfoLine.FileExtracted(outname, "> " + outname + "\n"));
                     }
                     if (!j.dotest) {
                       Fs.makepath(outname);
@@ -400,15 +401,18 @@ final class Extractor {
       if (p.data >= 0 && p.date != 0 && !fn.isEmpty() && fn.charAt(fn.length() - 1) != '/') {
         ++extracted;
         if (p.ptrSize() != (int) p.data) {
-          if (++errors == 1) Console.eprint("\nFailed (extracted/total fragments, file):\n");
-          Console.eprintf("%d/%d ", (int) p.data, p.ptrSize());
-          Console.eprint(fn + "\n");
+          if (++errors == 1)
+            Console.eprint("\nFailed (extracted/total fragments, file):\n");
+          Console.emit(new ErrorLine.ExtractFailed(fn, (int) p.data, p.ptrSize(),
+              (int) p.data + "/" + p.ptrSize() + " " + fn + "\n"));
         }
       }
     }
     if (errors > 0) {
-      Console.eprintf("\nExtracted %d of %d files OK (%d errors) using %1.3f MB x %d threads\n",
-          extracted - errors, extracted, errors, job.maxMemory / 1000000, tid.size());
+      Console.emit(new ErrorLine.ExtractFailures(extracted, errors,
+          String.format(java.util.Locale.ROOT,
+              "\nExtracted %d of %d files OK (%d errors) using %1.3f MB x %d threads\n",
+              extracted - errors, extracted, errors, job.maxMemory / 1000000, tid.size())));
     }
     in.close();
     return errors > 0 ? 1 : 0;
@@ -482,8 +486,8 @@ final class Extractor {
       long n = end - in.tell();
       if (copy(in, out, n) != n) throw ZpaqException.error("EOF");  // copy H and I blocks
     }
-    Console.print(j.index);
-    Console.printf(" -> %1.0f\n", out.tell() + .0);
+    Console.emit(new InfoLine.IndexWritten(j.index, out.tell(),
+        j.index + String.format(java.util.Locale.ROOT, " -> %1.0f\n", out.tell() + .0)));
     out.close();
     in.close();
     return 0;
@@ -583,10 +587,8 @@ final class Extractor {
     }
 
     // Summarize result
-    Console.print(j.archive);
-    Console.printf(" %1.0f -> ", sz + .0);
-    Console.print(j.repack);
-    Console.printf(" %1.0f\n", out.tell() + .0);
+    Console.print(j.archive + String.format(java.util.Locale.ROOT, " %1.0f -> ", sz + .0)
+        + j.repack + String.format(java.util.Locale.ROOT, " %1.0f\n", out.tell() + .0));
 
     // Rewrite C block
     out.seek(cstart, InputArchive.Whence.SET);
@@ -759,7 +761,9 @@ final class Extractor {
           try {
             Jidac.printProgress(job.totalSize, job.totalDone, j.summary);
             if (j.summary <= 0)
-              Console.printf("[%d..%d] -> %1.0f\n", b.start, b.start + b.size - 1, out.size() + 0.0);
+              Console.emit(new InfoLine.BlockExtracted(b.start, b.start + b.size - 1, out.size(),
+                  String.format(java.util.Locale.ROOT, "[%d..%d] -> %1.0f\n", b.start,
+                      b.start + b.size - 1, out.size() + 0.0)));
           } finally {
             job.mutex.unlock();
           }
@@ -868,9 +872,7 @@ final class Extractor {
               try {
                 Jidac.printProgress(job.totalSize, job.totalDone, j.summary);
                 if (j.summary <= 0) {
-                  Console.print("> ");
-                  Console.print(filename);
-                  Console.print("\n");
+                  Console.emit(new InfoLine.FileExtracted(filename, "> " + filename + "\n"));
                 }
               } finally {
                 job.mutex.unlock();

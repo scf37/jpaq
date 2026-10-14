@@ -94,12 +94,15 @@ final class Fs {
 
   /** Prints "filename: error message" to stderr (perror). */
   static void printerr(String filename, Exception e) {
-    Console.eprint(filename + ": " + strerror(e) + "\n");
+    String reason = strerror(e);
+    Console.emit(new io.github.scf37.jpaq.api.ErrorLine.FileError(filename, reason, e,
+        filename + ": " + reason + "\n"));
   }
 
   /** Prints "filename: error message" for the most recent failure. */
   static void printerr(String filename, String message) {
-    Console.eprint(filename + ": " + message + "\n");
+    Console.emit(new io.github.scf37.jpaq.api.ErrorLine.FileError(filename, message, null,
+        filename + ": " + message + "\n"));
   }
 
   /** File status as returned by lstat(). */

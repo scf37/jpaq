@@ -1,6 +1,8 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.ErrorLine;
 import io.github.scf37.jpaq.api.Format;
+import io.github.scf37.jpaq.api.InfoLine;
 import io.github.scf37.jpaq.api.LocalFsStorage;
 import io.github.scf37.jpaq.libzpaq.ZpaqException;
 import java.io.IOException;
@@ -114,16 +116,22 @@ public final class Main {
       return e.code;
     } catch (ZpaqException | OutOfMemoryError | java.io.UncheckedIOException
         | IllegalStateException e) {
-      Console.eprint("zpaq error: " + Jidac.what(e) + "\n");
+      fatal(e);
       errorcode = 2;
     } catch (RuntimeException e) {
-      Console.eprint("zpaq error: " + Jidac.what(e) + "\n");
+      fatal(e);
       errorcode = 2;
     }
     Console.flush();
-    Console.eprintf("%1.3f seconds %s\n", (Jidac.mtime() - Jidac.globalStart) / 1000.0,
-        errorcode > 1 ? "(with errors)" : errorcode > 0 ? "(with warnings)" : "(all OK)");
+    final double seconds = (Jidac.mtime() - Jidac.globalStart) / 1000.0;
+    Console.emit(new InfoLine.Finished(errorcode, seconds,
+        String.format(java.util.Locale.ROOT, "%1.3f seconds %s\n", seconds,
+            errorcode > 1 ? "(with errors)" : errorcode > 0 ? "(with warnings)" : "(all OK)")));
     return errorcode;
+  }
+
+  private static void fatal(Throwable e) {
+    Console.emit(new ErrorLine.Fatal(Jidac.what(e), e, "zpaq error: " + Jidac.what(e) + "\n"));
   }
 
   public static void main(String[] args) {
