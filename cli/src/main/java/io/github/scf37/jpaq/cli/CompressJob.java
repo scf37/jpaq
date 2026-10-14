@@ -3,6 +3,7 @@ package io.github.scf37.jpaq.cli;
 import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.Libzpaq;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
+import io.github.scf37.jpaq.libzpaq.ZpaqException;
 import io.github.scf37.jpaq.libzpaq.ZpaqWriter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -74,7 +75,15 @@ final class CompressJob {
    */
   void write(MemoryBuffer s, String fn, String method, String comment) {
     for (int k = method.isEmpty() ? qsize : 1; k > 0; --k) {
-      empty.acquireUninterruptibly();
+      while (true) {
+        checkFailure();
+        try {
+          if (empty.tryAcquire(100, java.util.concurrent.TimeUnit.MILLISECONDS)) break;
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw ZpaqException.error("interrupted");
+        }
+      }
       mutex.lock();
       try {
         int i;
@@ -108,6 +117,20 @@ final class CompressJob {
     }
   }
 
+  private volatile Throwable failure;
+
+  /** A worker failed: report it, stop everything, and let the main thread throw. */
+  private void fail(String message, Throwable e) {
+    Console.eprint(message);
+    if (failure == null) failure = e;
+    abort();
+  }
+
+  private void checkFailure() {
+    Throwable f = failure;
+    if (f != null) throw ZpaqException.error("compression failed: " + Jidac.what(f));
+  }
+
   /** Stops all threads without finishing the queue (after an error in the main thread). */
   void abort() {
     if (finished) return;
@@ -119,6 +142,7 @@ final class CompressJob {
   void join() {
     join0();
     finished = true;
+    checkFailure();
   }
 
   private void join0() {
@@ -182,9 +206,7 @@ final class CompressJob {
         }
       }
     } catch (RuntimeException | OutOfMemoryError e) {
-      mutex.lock();
-      Console.eprintf("job %d: %s\n", jobNumber + 1, Jidac.what(e));
-      Console.exit(1);
+      fail(String.format("job %d: %s\n", jobNumber + 1, Jidac.what(e)), e);
     }
   }
 
@@ -220,8 +242,7 @@ final class CompressJob {
         }
       }
     } catch (RuntimeException | OutOfMemoryError e) {
-      Console.eprintf("zpaq exiting from writeThread: %s\n", Jidac.what(e));
-      Console.exit(1);
+      fail(String.format("zpaq exiting from writeThread: %s\n", Jidac.what(e)), e);
     }
   }
 }

@@ -275,4 +275,38 @@ class SeqArchiveTest {
       }
     }
   }
+
+  @Test
+  void failedUploadLeavesNoTomeAndNoIndex(@TempDir Path dir) throws Exception {
+    MemStorage st = new MemStorage() {
+      @Override
+      public java.io.OutputStream write(String name) throws java.io.IOException {
+        java.io.OutputStream o = super.write(name);
+        if (!name.startsWith("arc")) return o;
+        return new java.io.OutputStream() {
+          long n;
+
+          @Override
+          public void write(int b) throws java.io.IOException {
+            write(new byte[] {(byte) b}, 0, 1);
+          }
+
+          @Override
+          public void write(byte[] b, int off, int len) throws java.io.IOException {
+            if ((n += len) > 200000) throw new java.io.IOException("connection lost");
+            o.write(b, off, len);
+          }
+
+          @Override
+          public void close() throws java.io.IOException {
+            o.close();
+          }
+        };
+      }
+    };
+    fill(dir.resolve("src"), 9, 6);
+    Out r = run(st, Format.SEQUENTIAL, dir, j -> j.indexOut = "idx1.jpaq", "a", "arc???.jpaq", "src", "-m1", "-t2");
+    assertEquals(2, r.rc, r.stderr);
+    assertTrue(st.files.isEmpty(), "nothing committed: " + st.files.keySet());
+  }
 }

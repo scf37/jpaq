@@ -20,7 +20,7 @@ import java.util.TreeMap;
  * delete (plus capabilities on request). Every call is recorded; a failed read says nothing about
  * the reason.
  */
-final class MemStorage implements Storage {
+class MemStorage implements Storage {
   final Map<String, byte[]> files = Collections.synchronizedMap(new TreeMap<>());
   final List<String> log = Collections.synchronizedList(new ArrayList<>());
   private final Set<Capability> caps;
