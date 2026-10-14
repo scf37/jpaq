@@ -73,7 +73,7 @@ final class LzBuffer implements ZpaqReader {
     else if (!sufArray) htlen = 1L << args[5];            // LZ77 hash table
     else htlen = 0;                                       // LZ77 SA and ISA
     if (htlen > MemoryBuffer.MAX_SIZE) throw new OutOfMemoryError("Out of memory");
-    ht = new int[(int) htlen];
+    ht = ArrayPool.ints((int) htlen);
     htsize = ht.length;
     shift1 = minMatch > 0 ? (args[5] - 1) / minMatch + 1 : 1;
     shift2 = minMatch2 > 0 ? (args[5] - 1) / minMatch2 + 1 : 0;
@@ -87,14 +87,23 @@ final class LzBuffer implements ZpaqReader {
 
     // build suffix array
     if (sufArray || level == 3) {  // LZ77-SA or BWT
-      sa = new int[level == 3 ? n + 1 : n];
+      sa = ArrayPool.ints(level == 3 ? n + 1 : n);
       if (n > 0) SuffixArray.build(in, n, sa);
       if (level < 3) {
         long isalen = 1L << 17 << args[0];
         if (isalen > MemoryBuffer.MAX_SIZE) throw new OutOfMemoryError("Out of memory");
-        isa = new int[(int) isalen];
+        isa = ArrayPool.ints((int) isalen);
       }
     }
+  }
+
+  /** Returns the work arrays to the pool; the object must not be used afterwards. */
+  void release() {
+    ArrayPool.release(ht);
+    ArrayPool.release(sa);
+    ArrayPool.release(isa);
+    sa = null;
+    isa = null;
   }
 
   // write k bits of x

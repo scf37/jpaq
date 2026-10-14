@@ -238,8 +238,12 @@ public final class Libzpaq {
     co.startSegment(filename, csBytes);
     if (args[1] >= 1 && args[1] <= 7 && args[1] != 4) {  // LZ77 or BWT
       LzBuffer lz = new LzBuffer(in, args);
-      co.setInput(lz);
-      co.compress();
+      try {
+        co.setInput(lz);
+        co.compress();
+      } finally {
+        lz.release();
+      }
     } else {  // compress with e8e9 or no preprocessing
       if (args[1] >= 4 && args[1] <= 7) E8E9.transform(in.data(), in.size());
       co.setInput(in);
