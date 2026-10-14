@@ -249,6 +249,30 @@ public final class Libzpaq {
     co.endBlock();
   }
 
+  /** Compresses a stream with the given method, saving block checksums. */
+  public static void compress(java.io.InputStream in, java.io.OutputStream out, String method) {
+    compress(ZpaqReader.of(in), ZpaqWriter.of(out), method);
+  }
+
+  /** Decompresses any valid ZPAQ stream, ignoring filenames, comments and checksums. */
+  public static void decompress(java.io.InputStream in, java.io.OutputStream out) {
+    decompress(ZpaqReader.of(in), ZpaqWriter.of(out));
+  }
+
+  /** Compresses {@code data} to a byte array using {@link #compress(ZpaqReader, ZpaqWriter, String)}. */
+  public static byte[] compress(byte[] data, String method) {
+    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+    compress(ZpaqReader.of(data), ZpaqWriter.of(bo), method);
+    return bo.toByteArray();
+  }
+
+  /** Decompresses a ZPAQ stream held in a byte array. */
+  public static byte[] decompress(byte[] data) {
+    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+    decompress(ZpaqReader.of(data), ZpaqWriter.of(bo));
+    return bo.toByteArray();
+  }
+
   /** Decompresses any valid ZPAQ stream, ignoring filenames, comments and checksums. */
   public static void decompress(ZpaqReader in, ZpaqWriter out) {
     Decompresser d = new Decompresser();
