@@ -143,4 +143,6 @@ byte-identical, the golden and differential tests above are the safety net for t
 ## License
 
 The ZPAQ sources are public domain (Matt Mahoney); see [COPYING](COPYING). The same terms apply
-to this port.
+to this port. The MIT-licensed libdivsufsort code embedded in the C++ `libzpaq.cpp` is *not* part
+of the port: the Java version builds suffix arrays with its own SA-IS implementation (the suffix
+array of a string is unique, so the archives are identical).

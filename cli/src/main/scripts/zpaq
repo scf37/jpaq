@@ -18,4 +18,4 @@ case "${LC_ALL:-${LC_CTYPE:-$LANG}}" in
   *UTF-8*|*utf8*|*UTF8*|*utf-8*) ;;
   *) if locale -a 2>/dev/null | grep -qi '^C\.utf-\?8$'; then export LC_ALL=C.UTF-8; fi ;;
 esac
-exec "$java" -XX:+UseParallelGC -XX:MaxRAMPercentage=75 -Xss16m $JAVA_OPTS -jar "$jar" "$@"
+exec "$java" -XX:+UseParallelGC -XX:MaxRAMPercentage=75 $JAVA_OPTS -jar "$jar" "$@"
