@@ -86,6 +86,12 @@ public final class Libzpaq {
    */
   public static void compressBlock(MemoryBuffer in, ZpaqWriter out, String method_,
       byte[] filename, byte[] comment, boolean dosha1) {
+    compressBlock(in, out, method_, filename, comment, dosha1, Dialect.STANDARD);
+  }
+
+  /** Same as above with the block magic of the given dialect. */
+  public static void compressBlock(MemoryBuffer in, ZpaqWriter out, String method_,
+      byte[] filename, byte[] comment, boolean dosha1, Dialect dialect) {
     String method = method_;
     final int n = in.size();  // input size
     final int arg0 = Math.max(LzBuffer.lg(n + 4095) - 20, 0);  // block size
@@ -222,6 +228,7 @@ public final class Libzpaq {
     int[] args = new int[9];
     String config = ConfigBuilder.makeConfig(method, args);
     Compressor co = new Compressor();
+    co.setDialect(dialect);
     co.setOutput(out);
     MemoryBuffer pcompCmd = new MemoryBuffer();
     co.writeTag();

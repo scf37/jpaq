@@ -63,6 +63,13 @@ public final class Compressor {
     enc.out = out;
   }
 
+  private Dialect dialect = Dialect.STANDARD;
+
+  /** Selects the block magic written by the following {@link #startBlock} calls. */
+  public void setDialect(Dialect d) {
+    dialect = d;
+  }
+
   /** Writes the 13 byte locator tag which allows scanning for blocks. */
   public void writeTag() {
     final int[] tag = {0x37, 0x6b, 0x53, 0x74, 0xa0, 0x31, 0x83, 0xd3, 0x8c, 0xb2, 0x28, 0xb0, 0xd3};
@@ -108,7 +115,7 @@ public final class Compressor {
   }
 
   private void startBlockHeader() {
-    enc.out.put('z');
+    enc.out.put(dialect.marker());
     enc.out.put('P');
     enc.out.put('Q');
     enc.out.put(1 + (z.header[6] == 0 ? 1 : 0));  // level 1 or 2
