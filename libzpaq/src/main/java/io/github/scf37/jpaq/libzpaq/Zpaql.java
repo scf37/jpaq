@@ -35,6 +35,9 @@ final class Zpaql {
   boolean f;
   private int pc;
   private ZpaqlJit.Code code;
+  /** Number of runs interpreted before the program is compiled. */
+  private static final int JIT_AFTER = 4096;
+  private int jitCountdown;
 
   Zpaql() {
     clear();
@@ -82,7 +85,8 @@ final class Zpaql {
     r = new int[256];
     a = b = c = d = pc = 0;
     f = false;
-    code = ZpaqlJit.get(header, hbegin, hend);
+    code = ZpaqlJit.get(header, hbegin, hend, false);
+    jitCountdown = code == null ? JIT_AFTER : 0;
   }
 
   /** Writes pending output to the output writer and checksum. */
@@ -192,6 +196,13 @@ final class Zpaql {
     if (code != null) {
       code.run(this, input);
       return;
+    }
+    if (jitCountdown > 0 && --jitCountdown == 0) {
+      code = ZpaqlJit.get(header, hbegin, hend, true);
+      if (code != null) {
+        code.run(this, input);
+        return;
+      }
     }
     pc = hbegin;
     a = input;

@@ -42,13 +42,18 @@ final class ZpaqlJit {
   private static final int Z = 1, A = 2, B = 3, C = 4, D = 5, F = 6, M = 7, H = 8, R = 9, MM = 10,
       HM = 11;
 
-  /** Returns the compiled program in header[begin..end), or null to use the interpreter. */
-  static Code get(byte[] header, int begin, int end) {
+  /**
+   * Returns the compiled program in header[begin..end), or null to use the interpreter. A program
+   * that has not been compiled yet is only compiled if {@code compile} is set (generating a class
+   * costs more than interpreting a small input).
+   */
+  static Code get(byte[] header, int begin, int end, boolean compile) {
     if (!ENABLED || end <= begin) return null;
     byte[] prog = java.util.Arrays.copyOfRange(header, begin, end);
     ByteBuffer key = ByteBuffer.wrap(prog);
     Object o = CACHE.get(key);
     if (o == null) {
+      if (!compile) return null;
       if (CACHE.size() >= MAX_CLASSES) return null;  // too many distinct models
       Code c = null;
       try {

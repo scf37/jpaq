@@ -36,8 +36,11 @@ final class PredictorJit {
   private static final ClassDesc I = ConstantDescs.CD_int;
   private static final ClassDesc V = ConstantDescs.CD_void;
 
-  /** Returns generated code for the n components starting at header[7], or null. */
-  static Predictor.Code get(byte[] header, int n) {
+  /**
+   * Returns generated code for the n components starting at header[7], or null. A model that has
+   * not been compiled yet is only compiled if {@code compile} is set.
+   */
+  static Predictor.Code get(byte[] header, int n, boolean compile) {
     if (!ENABLED) return null;
     int len = 0;
     for (int i = 0, cp = 7; i < n; i++) {
@@ -49,7 +52,7 @@ final class PredictorJit {
     ByteBuffer bb = ByteBuffer.wrap(key);
     Object o = CACHE.get(bb);
     if (o == null) {
-      if (CACHE.size() >= MAX_CLASSES) return null;  // too many distinct models
+      if (!compile || CACHE.size() >= MAX_CLASSES) return null;  // too many distinct models
       Predictor.Code c = null;
       try {
         c = generate(key);
