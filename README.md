@@ -16,9 +16,8 @@ and fragment sizes, encryption, multi-part archives, indexes, `-noattributes`, �
 writes exactly the same archive bytes as the C++ version, and the console output has the same text.
 Archives are interchangeable in both directions. See [Compatibility and testing](#compatibility-and-testing).
 
-> **Status:** this is the *working* version. It favours being a faithful, readable port over speed
-> (no JIT for ZPAQL, no SIMD, one array per model component, …). See
-> [Performance](#performance) for the measured baseline and the optimization plan.
+> **Status:** byte-identical to the C++ version and within 1.0-1.6x of its speed. See
+> [Performance](#performance).
 
 ## Building
 
@@ -130,17 +129,13 @@ Known harmless differences: timing and thread numbers in messages, and the banne
 
 ## Performance
 
-Measured on the same 4 core machine, default settings, `-m1` on 217 MB of mixed data
-(JDK modules, binaries, sources): C++ 7.3 s, Java 9.0 s. The context mixing levels are about two
-times slower than the C++ version with its x86 JIT for ZPAQL and hand-written predictor
-(`-m4` on 19 MB: 26 s vs 56 s; `-m5`: 98 s vs 198 s). The suffix array used by BWT and LZ77-SA
-modes is SA-IS rather than divsufsort.
-
-The code is structured so that the hot paths can be optimized without changing the format
-(predictor components → struct-of-arrays and specialization per model, ZPAQL → bytecode
-generation via the class-file API, bulk I/O, off-heap tables). Because the output must remain
-byte-identical, the golden and differential tests above are the safety net for that work.
-[docs/OPTIMIZATION.md](docs/OPTIMIZATION.md) has the baseline numbers and the list of hot spots.
+Measured on a 4 core machine with JDK 25 (details in [docs/OPTIMIZATION.md](docs/OPTIMIZATION.md)):
+`-m1` on 173 MB takes about as long as the C++ version (5.8 s vs 5.9 s), the context mixing levels
+`-m3`..`-m5` are about 1.4-1.5x slower than the C++ version with its x86 JIT, `-m2` about 1.6x
+(`-m4` on 12 MB of text: 17.6 s vs 12.4 s, `-m5`: 61 s vs 44 s). ZPAQL programs and the context
+mixing predictor are compiled to JVM bytecode at run time (class-file API, one hidden class per
+model; `-Djpaq.zpaqlJit=false` / `-Djpaq.predictorJit=false` select the plain interpreters). The
+suffix array used by BWT and LZ77-SA modes is SA-IS rather than divsufsort.
 
 ## License
 
