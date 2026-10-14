@@ -1,1 +1,89 @@
-package io.github.scf37.jpaq.cli; public class Main { public static void main(String[] a){ System.out.println(io.github.scf37.jpaq.libzpaq.Hello.hi()); } }
+package io.github.scf37.jpaq.cli;
+
+import io.github.scf37.jpaq.libzpaq.ZpaqException;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+
+/** The zpaq command line archiver. */
+public final class Main {
+  private Main() {}
+
+  /**
+   * Returns the arguments as byte strings (UTF-8 bytes as chars), recovering the raw bytes from
+   * /proc/self/cmdline if possible so that names that are not valid UTF-8 are preserved.
+   */
+  static String[] byteArgs(String[] args) {
+    String[] r = new String[args.length + 1];
+    r[0] = "zpaq";
+    String[] raw = rawArgs(args.length);
+    if (raw != null) {
+      for (int i = 0; i < args.length; i++) {
+        boolean ascii = args[i].chars().allMatch(c -> c < 128);
+        if (ascii && !args[i].equals(raw[i])) {
+          raw = null;  // not aligned with the Java arguments; do not trust
+          break;
+        }
+      }
+    }
+    for (int i = 0; i < args.length; i++) r[i + 1] = raw != null ? raw[i] : Strs.toBytes(args[i]);
+    return r;
+  }
+
+  private static String[] rawArgs(int n) {
+    try {
+      Path p = Path.of("/proc/self/cmdline");
+      if (!Files.isReadable(p)) return null;
+      byte[] b = Files.readAllBytes(p);
+      java.util.List<String> parts = new java.util.ArrayList<>();
+      int s = 0;
+      for (int i = 0; i < b.length; i++) {
+        if (b[i] == 0) {
+          parts.add(new String(b, s, i - s, StandardCharsets.ISO_8859_1));
+          s = i + 1;
+        }
+      }
+      if (s < b.length) parts.add(new String(b, s, b.length - s, StandardCharsets.ISO_8859_1));
+      if (parts.size() < n) return null;
+      return parts.subList(parts.size() - n, parts.size()).toArray(new String[0]);
+    } catch (IOException | RuntimeException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Runs the command line (without the program name). Returns the exit code: 0 OK, 1 warnings, 2
+   * errors.
+   */
+  public static int run(String[] args) {
+    Jidac.globalStart = Jidac.mtime();
+    int errorcode;
+    try {
+      Jidac jidac = new Jidac();
+      errorcode = jidac.doCommand(byteArgs(args));
+    } catch (ExitException e) {
+      Console.flush();
+      return e.code;
+    } catch (ZpaqException | OutOfMemoryError | java.io.UncheckedIOException
+        | IllegalStateException e) {
+      Console.eprint("zpaq error: " + Jidac.what(e) + "\n");
+      errorcode = 2;
+    } catch (RuntimeException e) {
+      Console.eprint("zpaq error: " + Jidac.what(e) + "\n");
+      errorcode = 2;
+    }
+    Console.flush();
+    Console.eprintf("%1.3f seconds %s\n", (Jidac.mtime() - Jidac.globalStart) / 1000.0,
+        errorcode > 1 ? "(with errors)" : errorcode > 0 ? "(with warnings)" : "(all OK)");
+    return errorcode;
+  }
+
+  public static void main(String[] args) {
+    int rc = run(args);
+    Console.flush();
+    Console.err.flush();
+    System.exit(rc);
+  }
+}
