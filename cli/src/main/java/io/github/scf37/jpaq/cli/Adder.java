@@ -366,32 +366,9 @@ final class Adder {
           //   2. Non-uniform distribution in o1 (counted in o2).
           //   3. Fraction of zeros in o1 (bytes never seen).
           //   4. Fraction of matches between o1 and previous o1 (o1prev).
-          int text1 = 0;
-          int exe1 = 0;
-          long h1 = sz;
-          int[] o1ct = new int[256];  // counts of bytes in o1
-          for (int i = 0; i < 256; ++i) {
-            final int o1i = o1[i] & 255;
-            if (o1ct[o1i] < 255) h1 -= ((long) sz * DT_TABLE[o1ct[o1i]++]) >> 15;
-            if (o1i == ' ' && (Strs.isalnum(i) || i == '.' || i == ',')) ++text1;
-            if (o1i != 0 && (i < 9 || i == 11 || i == 12 || (i >= 14 && i <= 31) || i >= 240))
-              --text1;
-            if (i >= 192 && i < 240 && o1i != 0 && (o1i < 128 || o1i >= 192)) --text1;
-            if (o1i == 139) ++exe1;
-          }
-          text1 = text1 >= 3 ? 1 : 0;
-          exe1 = exe1 >= 5 ? 1 : 0;
-          if (sz > 0) h1 = h1 * h1 / sz;  // Test 2: near 0 if random.
-          long h2 = h1 & 0xFFFFFFFFL;
-          if (h2 > hits) hits = h2;
-          h2 = (long) o1ct[0] * sz / 256;  // Test 3: bytes never seen or that predict 0.
-          if (h2 > hits) hits = h2;
-          h2 = 0;
-          for (int i = 0; i < 256 * ON; ++i)  // Test 4: compare to previous o1.
-            h2 += o1prev[i] == o1[i & 255] ? 1 : 0;
-          h2 = h2 * sz / (256 * ON);
-          if (h2 > hits) hits = h2;
-          if (hits > sz) hits = sz;
+          hits = sc.analyze(o1, sz, hits, o1prev, ON, DT_TABLE);
+          final int text1 = sc.text1;
+          final int exe1 = sc.exe1;
 
           // Start a new block if the current block is almost full, or at the start of a file
           // that won't fit or doesn't share mutual information with the current block, or last
