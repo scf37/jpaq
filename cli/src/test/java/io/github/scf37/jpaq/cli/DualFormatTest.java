@@ -62,4 +62,50 @@ class DualFormatTest {
         "a", "arc???.jpaq", "src", "-index", "plain.zpaq");
     assertNotEquals(0, s.rc());
   }
+
+  private static final byte[] TAG = {0x37, 0x6b, 0x53, 0x74, (byte) 0xa0, 0x31, (byte) 0x83,
+      (byte) 0xd3, (byte) 0x8c, (byte) 0xb2, 0x28, (byte) 0xb0, (byte) 0xd3};
+
+  /** Replaces the block magic jPQ by zPQ. Returns the number of blocks. */
+  private static int normalize(byte[] b) {
+    int n = 0;
+    for (int i = 0; i + 16 <= b.length; i++) {
+      boolean tag = true;
+      for (int k = 0; k < 13 && tag; k++) tag = b[i + k] == TAG[k];
+      if (tag && (b[i + 13] == 'z' || b[i + 13] == 'j') && b[i + 14] == 'P' && b[i + 15] == 'Q') {
+        b[i + 13] = 'z';
+        n++;
+      }
+    }
+    return n;
+  }
+
+  @Test
+  void sequentialTomeDiffersFromClassicOnlyInMagicAndHeader(@TempDir Path dir) throws Exception {
+    Path src = dir.resolve("src");
+    SeqArchiveTest.fill(src, 21, 5);
+    Jidac.clockOverride = java.time.Instant.parse("2026-03-04T05:06:07Z");
+    try {
+      // classic remote archive: tome + index (same layout as the sequential one)
+      Path c = dir;
+      assertTrue(Zpaq.run(c, "a", "arc???.zpaq", "src", "-m1", "-t1", "-index", "idx.zpaq").ok());
+      var st = new MemStorage();
+      var o = SeqArchiveTest.run(st, Format.SEQUENTIAL, dir, j -> j.indexOut = "idx.jpaq",
+          "a", "arc???.jpaq", "src", "-m1", "-t1");
+      assertEquals(0, o.rc(), o.stderr());
+      for (String[] pair : new String[][] {{"arc001.zpaq", "arc001.jpaq"}, {"idx.zpaq", "idx.jpaq"}}) {
+        byte[] a = Files.readAllBytes(c.resolve(pair[0]));
+        byte[] b = st.files.get(pair[1]).clone();
+        assertEquals(a.length, b.length, pair[0]);
+        assertEquals(0, normalize(a) - normalize(b));
+        int diff = 0;
+        for (int i = 0; i < a.length; i++) if (a[i] != b[i]) diff++;
+        // only the header block (104 bytes) may differ: its data size and checksum
+        for (int i = 104; i < a.length; i++) assertEquals(a[i], b[i], pair[0] + " at " + i);
+        assertTrue(diff <= 30, "differences: " + diff);
+      }
+    } finally {
+      Jidac.clockOverride = null;
+    }
+  }
 }

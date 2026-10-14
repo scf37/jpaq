@@ -6,7 +6,7 @@ A Java 25 port of the [ZPAQ](http://mattmahoney.net/dc/zpaq.html) journaling arc
 | module | artifact | contents |
 |--------|----------|----------|
 | [`libzpaq/`](libzpaq) | `jpaq-libzpaq` | the compression library: ZPAQ level 2 compressor / decompressor, ZPAQL compiler and interpreter, LZ77 / BWT / E8E9 preprocessors, SHA-1, SHA-256, AES-CTR, scrypt |
-| [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`; journaling, deduplication, encryption, multi-part archives, indexes, streaming format) built on the library |
+| [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`; journaling, deduplication, encryption, multi-part archives, indexes, streaming format) built on the library, and a Java API with pluggable archive storage and typed output (see [Calling the archiver from Java](#calling-the-archiver-from-java)) |
 | [`cpp/`](cpp) | – | the original C++ sources the port was made from (kept as the reference implementation) |
 | [`tools/difftest/`](tools/difftest) | – | differential test tools that run this port and the C++ original side by side |
 
@@ -71,8 +71,10 @@ Differences from the C++ program:
 
 ### Calling the archiver from Java
 
-Applications (for example a backup program that also writes a zpaq-readable archive) can run the
-command line in-process through `io.github.scf37.jpaq.cli.Zpaq`, without spawning a JVM:
+Applications (for example a backup program) run the archiver in-process through
+`io.github.scf37.jpaq.cli.Zpaq`, without spawning a JVM. Nothing calls `System.exit`.
+
+**With command line arguments** (output collected as text):
 
 ```java
 Zpaq.Result r = Zpaq.run(workDir, "a", "backup.zpaq", "data", "-m2", "-key", "secret");
@@ -80,10 +82,44 @@ if (!r.ok()) throw new IOException(r.stderr());      // exitCode: 0 OK, 1 warnin
 String listing = Zpaq.run(workDir, "l", "backup.zpaq").stdout();
 ```
 
-Arguments are those of the command line; relative paths resolve against `workDir`; output is
-captured in the result and `System.exit` is never called. Calls are serialized. (An unexpected
-internal error in a compression worker thread still terminates the JVM, as in the CLI.)
-The same is available as `Main.run(Path, String[])` for the exit code only.
+**Typed**, with archive files in any storage and the output as objects:
+
+```java
+Storage storage = new ShellStorage("cat \"$1\"", "cat > \"$1\"", "rm -f \"$1\"", dir); // or your own
+Options o = new Options().method("2").key("secret").threads(4);
+int rc = Zpaq.run(storage, workDir,
+    new Command.Add("data???.jpaq", List.of("home/docs"), o, Format.SEQUENTIAL, "index-41.jpaq", "index-42.jpaq"),
+    line -> {
+      switch (line) {
+        case InfoLine.FileAdded f -> log("added " + f.name() + " " + f.size());
+        case ErrorLine.FileError e -> warn(e.name() + ": " + e.reason());
+        default -> { }
+      }
+    });
+try (Stream<Line> lines = Zpaq.stream(storage, workDir, new Command.Extract(...))) { ... }
+```
+
+Commands are `Add`, `Extract`, `ListArchive` and `RebuildIndex`. Output is `InfoLine` (what the command
+line prints to stdout, plus result statistics) and `ErrorLine` (problems) records such as `FileAdded`,
+`FileExtracted`, `ListEntry`, `Progress`, `Finished`, `FileError`, `Fatal`; `line.text()` is exactly the
+text the command line prints and `line.channel()` where. Calls are serialized (the program keeps
+global state).
+
+#### Storage and the sequential format
+
+Archive files (parts/tomes and index files) are read and written through `api.Storage`: streaming
+`read(name)`, `write(name)` and `delete(name)`, which is what a shell script can do, plus capabilities
+a storage may declare: `PROBE` (`exists`, `length`), `RANGED_READ` (start reading at an offset) and
+`RANDOM_WRITE` (positional read/write/truncate). A failed operation is just a failure: the archiver never
+interprets the reason. `LocalFsStorage` (all capabilities) is what the command line uses.
+
+* `Format.CLASSIC`: the zpaq 7.15 format, byte identical to the C++ program. Writing needs `RANDOM_WRITE`
+  and `PROBE` (the transaction header is patched at the end and empty updates are truncated).
+* `Format.SEQUENTIAL` ("jpaq" archives, `.jpaq`): every tome and index file is written front to back, once,
+  nothing is patched or truncated. Needs only streaming read/write/delete and an index. See
+  [docs/SEQUENTIAL.md](docs/SEQUENTIAL.md). Stock zpaq cannot read these archives (and says so cleanly).
+
+The jpaq command line reads both formats and any file extension; it writes the classic format.
 
 ## Library
 
