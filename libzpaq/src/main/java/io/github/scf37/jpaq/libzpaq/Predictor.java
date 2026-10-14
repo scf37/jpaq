@@ -40,6 +40,9 @@ final class Predictor {
   final Component[] comp = new Component[256];
   private int n;
   private Code code;
+  /** Number of bits predicted by the generic loop before the model is compiled. */
+  private static final int JIT_AFTER = 1 << 15;
+  private int jitCountdown;
 
   Predictor(Zpaql z) {
     this.z = z;
@@ -172,12 +175,17 @@ final class Predictor {
       }
       cp += Components.size(type);
     }
-    code = PredictorJit.get(z.header, n);
+    code = PredictorJit.get(z.header, n, false);
+    jitCountdown = code == null ? JIT_AFTER : 0;
   }
 
   /** Returns the probability that the next bit is a 1 (0..32767). */
   int predict() {
     if (code != null) return code.predict(this);
+    if (jitCountdown > 0 && --jitCountdown == 0) {
+      code = PredictorJit.get(z.header, n, true);
+      if (code != null) return code.predict(this);
+    }
     final int n = this.n;
     final int c8 = this.c8;
     final int hmap4 = this.hmap4;
