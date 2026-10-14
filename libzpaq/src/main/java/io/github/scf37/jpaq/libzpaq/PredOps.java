@@ -27,30 +27,31 @@ final class PredOps {
   }
 
   // ---- CM
-  static void predictCm(Predictor.Component cr, int[] p, int[] h, int i, int hmap4) {
+  static void predictCm(Predictor.Component cr, int[] p, int[] h, int i, int hmap4, int mask) {
     final int[] cm = cr.cm;
-    int cxt = (h[i] ^ hmap4) & (cm.length - 1);
+    int cxt = (h[i] ^ hmap4) & mask;
     cr.cxt = cxt;
     p[i] = stretch(cm[cxt] >>> 17);
   }
 
-  static void updateCm(Predictor.Component cr, int y) {
-    train(cr, y);
+  static void updateCm(Predictor.Component cr, int y, int mask, int limit) {
+    train(cr, y, mask, limit);
   }
 
   // Reduce prediction error in cr.cm[cr.cxt & mask]
-  static void train(Predictor.Component cr, int y) {
+  static void train(Predictor.Component cr, int y, int mask, int limit) {
     final int[] cm = cr.cm;
-    int idx = cr.cxt & (cm.length - 1);
+    int idx = cr.cxt & mask;
     int pn = cm[idx];
     int count = pn & 0x3ff;
     int error = y * 32767 - (pn >>> 17);
-    cm[idx] = pn + ((error * Tables.SDT[count] & -1024) + (count < cr.limit ? 1 : 0));
+    cm[idx] = pn + ((error * Tables.SDT[count] & -1024) + (count < limit ? 1 : 0));
   }
 
   // ---- ICM
-  static void predictIcm(Predictor.Component cr, int[] p, int[] h, int i, int c8, int hmap4) {
-    if (c8 == 1 || (c8 & 0xf0) == 16) cr.c = find(cr.ht, cr.c1 + 2, h[i] + 16 * c8);
+  static void predictIcm(Predictor.Component cr, int[] p, int[] h, int i, int c8, int hmap4,
+      int sizebits) {
+    if (c8 == 1 || (c8 & 0xf0) == 16) cr.c = find(cr.ht, sizebits, h[i] + 16 * c8);
     int cxt = cr.ht[cr.c + (hmap4 & 15)] & 255;
     cr.cxt = cxt;
     p[i] = stretch(cr.cm[cxt] >>> 8);
@@ -65,27 +66,26 @@ final class PredOps {
   }
 
   // ---- MATCH
-  static void predictMatch(Predictor.Component cr, int[] p, int i) {
+  static void predictMatch(Predictor.Component cr, int[] p, int i, int hmask) {
     if (cr.a == 0) {
       p[i] = 0;
     } else {
       byte[] ht = cr.ht;
-      cr.c = ((ht[(cr.limit - cr.b) & (ht.length - 1)] & 255) >> (7 - cr.cxt)) & 1;
+      cr.c = ((ht[(cr.limit - cr.b) & hmask] & 255) >> (7 - cr.cxt)) & 1;
       p[i] = stretch(Tables.SDT2K[cr.a] * (cr.c * -2 + 1) & 32767);
     }
   }
 
-  static void updateMatch(Predictor.Component cr, int[] h, int i, int y) {
+  static void updateMatch(Predictor.Component cr, int[] h, int i, int y, int hmask, int cmask) {
     byte[] ht = cr.ht;
-    final int hmask = ht.length - 1;
     if (cr.c != y) cr.a = 0;
     ht[cr.limit] = (byte) ((ht[cr.limit] & 255) * 2 + y);
     if (++cr.cxt == 8) {
       cr.cxt = 0;
       ++cr.limit;
-      cr.limit &= (1 << cr.c2) - 1;
+      cr.limit &= hmask;
       int[] cm = cr.cm;
-      int ci = h[i] & (cm.length - 1);
+      int ci = h[i] & cmask;
       if (cr.a == 0) {
         cr.b = cr.limit - cm[ci];
         if ((cr.b & hmask) != 0) {
@@ -101,74 +101,72 @@ final class PredOps {
   }
 
   // ---- AVG
-  static void predictAvg(Predictor.Component cr, int[] p, int i) {
-    p[i] = (p[cr.c1] * cr.c3 + p[cr.c2] * (256 - cr.c3)) >> 8;
+  static void predictAvg(int[] p, int i, int j, int k, int w) {
+    p[i] = (p[j] * w + p[k] * (256 - w)) >> 8;
   }
 
   // ---- MIX2
-  static void predictMix2(Predictor.Component cr, int[] p, int[] h, int i, int c8) {
-    int cxt = (h[i] + (c8 & cr.c5)) & (cr.c - 1);
+  static void predictMix2(Predictor.Component cr, int[] p, int[] h, int i, int c8, int j, int k,
+      int c5, int mask) {
+    int cxt = (h[i] + (c8 & c5)) & mask;
     cr.cxt = cxt;
     int w = cr.a16[cxt];
-    p[i] = (w * p[cr.c2] + (65536 - w) * p[cr.c3]) >> 16;
+    p[i] = (w * p[j] + (65536 - w) * p[k]) >> 16;
   }
 
-  static void updateMix2(Predictor.Component cr, int[] p, int i, int y) {
-    int err = ((y * 32767 - squash(p[i])) * cr.c4) >> 5;
+  static void updateMix2(Predictor.Component cr, int[] p, int i, int y, int j, int k, int c4) {
+    int err = ((y * 32767 - squash(p[i])) * c4) >> 5;
     int w = cr.a16[cr.cxt];
-    w += (err * (p[cr.c2] - p[cr.c3]) + (1 << 12)) >> 13;
+    w += (err * (p[j] - p[k]) + (1 << 12)) >> 13;
     if (w < 0) w = 0;
     if (w > 65535) w = 65535;
     cr.a16[cr.cxt] = (char) w;
   }
 
   // ---- MIX
-  static void predictMix(Predictor.Component cr, int[] p, int[] h, int i, int c8) {
-    int m = cr.c3;
-    int cxt = h[i] + (c8 & cr.c5);
-    cxt = (cxt & (cr.c - 1)) * m;
+  static void predictMix(Predictor.Component cr, int[] p, int[] h, int i, int c8, int m, int pj,
+      int c5, int mask) {
+    int cxt = h[i] + (c8 & c5);
+    cxt = (cxt & mask) * m;
     cr.cxt = cxt;
     int[] wt = cr.cm;
     int s = 0;
-    int pj = cr.c2;
     for (int j = 0; j < m; j++) s += (wt[cxt + j] >> 8) * p[pj + j];
     p[i] = clamp2k(s >> 8);
   }
 
-  static void updateMix(Predictor.Component cr, int[] p, int i, int y) {
-    int m = cr.c3;
-    int err = ((y * 32767 - squash(p[i])) * cr.c4) >> 4;
+  static void updateMix(Predictor.Component cr, int[] p, int i, int y, int m, int pj, int c4) {
+    int err = ((y * 32767 - squash(p[i])) * c4) >> 4;
     int[] wt = cr.cm;
     int base = cr.cxt;
-    int pj = cr.c2;
     for (int j = 0; j < m; j++)
       wt[base + j] = clamp512k(wt[base + j] + ((err * p[pj + j] + (1 << 12)) >> 13));
   }
 
   // ---- ISSE
-  static void predictIsse(Predictor.Component cr, int[] p, int[] h, int i, int c8, int hmap4) {
-    if (c8 == 1 || (c8 & 0xf0) == 16) cr.c = find(cr.ht, cr.c1 + 2, h[i] + 16 * c8);
+  static void predictIsse(Predictor.Component cr, int[] p, int[] h, int i, int c8, int hmap4,
+      int j, int sizebits) {
+    if (c8 == 1 || (c8 & 0xf0) == 16) cr.c = find(cr.ht, sizebits, h[i] + 16 * c8);
     int cxt = cr.ht[cr.c + (hmap4 & 15)] & 255;
     cr.cxt = cxt;
     int[] wt = cr.cm;
-    p[i] = clamp2k((wt[cxt * 2] * p[cr.c2] + wt[cxt * 2 + 1] * 64) >> 16);
+    p[i] = clamp2k((wt[cxt * 2] * p[j] + wt[cxt * 2 + 1] * 64) >> 16);
   }
 
-  static void updateIsse(Predictor.Component cr, int[] p, int i, int y, int hmap4) {
+  static void updateIsse(Predictor.Component cr, int[] p, int i, int y, int hmap4, int j) {
     int err = y * 32767 - squash(p[i]);
     int[] wt = cr.cm;
     int w0 = cr.cxt * 2;
-    wt[w0] = clamp512k(wt[w0] + ((err * p[cr.c2] + (1 << 12)) >> 13));
+    wt[w0] = clamp512k(wt[w0] + ((err * p[j] + (1 << 12)) >> 13));
     wt[w0 + 1] = clamp512k(wt[w0 + 1] + ((err + 16) >> 5));
     cr.ht[cr.c + (hmap4 & 15)] = (byte) Tables.SNS[cr.cxt * 4 + y];
   }
 
   // ---- SSE
-  static void predictSse(Predictor.Component cr, int[] p, int[] h, int i, int c8) {
+  static void predictSse(Predictor.Component cr, int[] p, int[] h, int i, int c8, int j, int mask) {
     final int[] cm = cr.cm;
-    final int mask = cm.length - 1;
     int cxt = (h[i] + c8) * 32;
-    int pq = p[cr.c2] + 992;
+    int pq = p[j] + 992;
     if (pq < 0) pq = 0;
     if (pq > 1983) pq = 1983;
     int wt = pq & 63;
@@ -179,8 +177,8 @@ final class PredOps {
     cr.cxt = cxt + (wt >> 5);
   }
 
-  static void updateSse(Predictor.Component cr, int y) {
-    train(cr, y);
+  static void updateSse(Predictor.Component cr, int y, int mask, int limit) {
+    train(cr, y, mask, limit);
   }
 
   // Find cxt row in hash table ht. ht has rows of 16 indexed by the low sizebits of cxt with
