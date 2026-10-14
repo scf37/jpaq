@@ -21,19 +21,20 @@ final class Zpaql {
   int hbegin;
   int hend;
 
-  private byte[] m = new byte[0];
-  private int mmask;
-  private int[] h = new int[0];
-  private int hmask;
-  private int[] r = new int[0];
+  byte[] m = new byte[0];
+  int mmask;
+  int[] h = new int[0];
+  int hmask;
+  int[] r = new int[0];
   private final byte[] outbuf = new byte[1 << 14];
   private int bufptr;
   private int a;
-  private int b;
-  private int c;
-  private int d;
-  private boolean f;
+  int b;
+  int c;
+  int d;
+  boolean f;
   private int pc;
+  private ZpaqlJit.Code code;
 
   Zpaql() {
     clear();
@@ -81,6 +82,7 @@ final class Zpaql {
     r = new int[256];
     a = b = c = d = pc = 0;
     f = false;
+    code = ZpaqlJit.get(header, hbegin, hend);
   }
 
   /** Writes pending output to the output writer and checksum. */
@@ -96,7 +98,7 @@ final class Zpaql {
   }
 
   /** Outputs byte ch (0..255) or -1 at end of segment. */
-  private void outc(int ch) {
+  void outc(int ch) {
     if (ch < 0) {
       flush();
       return;
@@ -187,6 +189,10 @@ final class Zpaql {
 
   /** Executes the program with the given input in A (0..255, or -1 for end of segment). */
   void run(int input) {
+    if (code != null) {
+      code.run(this, input);
+      return;
+    }
     pc = hbegin;
     a = input;
     while (execute()) { }
@@ -196,7 +202,7 @@ final class Zpaql {
     return header[pc++] & 255;
   }
 
-  private void err() {
+  static void err() {
     throw ZpaqException.error("ZPAQL execution error");
   }
 
@@ -432,11 +438,11 @@ final class Zpaql {
     return true;
   }
 
-  private static int div(int x, int y) {
+  static int div(int x, int y) {
     return y != 0 ? Integer.divideUnsigned(x, y) : 0;
   }
 
-  private static int mod(int x, int y) {
+  static int mod(int x, int y) {
     return y != 0 ? Integer.remainderUnsigned(x, y) : 0;
   }
 }
