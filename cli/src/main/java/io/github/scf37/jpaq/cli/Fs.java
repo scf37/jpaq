@@ -24,11 +24,21 @@ final class Fs {
   static final boolean UNIX = FileSystems.getDefault().supportedFileAttributeViews().contains("unix");
   static final boolean WINDOWS = !UNIX && System.getProperty("os.name", "").startsWith("Windows");
 
+  /** Directory against which relative names are resolved, or null for the process directory. */
+  private static volatile Path base;
+
+  /** Sets the directory that relative file names are resolved against (null = process cwd). */
+  static void setWorkingDirectory(Path dir) {
+    base = dir;
+  }
+
   /** Converts a byte string (UTF-8) to a Path. */
   static Path path(String name) {
     String s = Strs.fromBytes(name);
     if (WINDOWS) s = s.replace('/', '\\');
-    return Path.of(s);
+    Path p = Path.of(s);
+    Path b = base;
+    return b != null ? b.resolve(p) : p;
   }
 
   /** Converts a file name from the file system to a byte string with '/' separators. */

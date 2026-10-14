@@ -1,0 +1,161 @@
+# Scenarios compared with the output of the reference C++ zpaq 7.15.
+
+scenario level0
+zpaq a z.zpaq tree -m0 -until 20250101000000
+hash z.zpaq
+
+scenario level1
+zpaq a z.zpaq tree -m1 -until 20250101000000
+hash z.zpaq
+zpaq x z.zpaq -to ex
+tree ex
+
+scenario level2
+zpaq a z.zpaq tree -m2 -until 20250101000000
+hash z.zpaq
+
+scenario level3
+zpaq a z.zpaq tree -m3 -until 20250101000000
+hash z.zpaq
+
+scenario level4
+zpaq a z.zpaq tree -m4 -until 20250101000000
+hash z.zpaq
+
+scenario level5
+zpaq a z.zpaq tree -m5 -until 20250101000000
+hash z.zpaq
+zpaq x z.zpaq -to ex
+tree ex
+
+scenario update
+zpaq a z.zpaq tree -until 20250101000000
+hash z.zpaq
+mutate 1
+zpaq a z.zpaq tree -until 20250102000000
+hash z.zpaq
+mutate 2
+zpaq a z.zpaq tree -until 20250103000000
+hash z.zpaq
+mutate 3
+zpaq a z.zpaq tree -until 20250104000000
+hash z.zpaq
+zpaq l z.zpaq
+out
+zpaq l z.zpaq -all
+out
+zpaq l z.zpaq -s-1 -all
+out
+zpaq l z.zpaq tree
+out
+zpaq x z.zpaq -to ex1 -until 1
+tree ex1
+zpaq x z.zpaq -to ex2 -until 2
+tree ex2
+zpaq x z.zpaq -to ex4
+tree ex4
+zpaq x z.zpaq -to exall -all
+tree exall
+
+scenario streaming
+epoch 1735689600
+zpaq a z.zpaq tree -ms -until 20250101000000
+hash z.zpaq
+zpaq l z.zpaq
+out
+zpaq x z.zpaq -to ex
+tree ex
+
+scenario xmethods
+zpaq a a.zpaq tree -method x4.3ci1 -until 20250101000000
+hash a.zpaq
+zpaq a b.zpaq tree -method x4.1.5.0.3.22 -fragment 3 -until 20250101000000
+hash b.zpaq
+zpaq a c.zpaq tree -method x4.2.12.0.7.25.1c0.0.511i2 -until 20250101000000
+hash c.zpaq
+zpaq a d.zpaq tree -method x4.0ci1.1.1.1.2amm -until 20250101000000
+hash d.zpaq
+zpaq a e.zpaq tree -m10 -fragment 0 -until 20250101000000
+hash e.zpaq
+zpaq x e.zpaq -to ex
+tree ex
+
+scenario noattributes
+zpaq a z.zpaq tree -noattributes -until 20250101000000
+hash z.zpaq
+zpaq l z.zpaq
+out
+
+scenario multipart-index
+epoch 1735689600
+zpaq a p???.zpaq tree -index idx.zpaq
+hash p001.zpaq
+hash idx.zpaq
+mutate 1
+epoch 1735776000
+zpaq a p???.zpaq tree -index idx.zpaq
+hash p002.zpaq
+hash idx.zpaq
+zpaq l idx.zpaq -all
+out
+zpaq l p???.zpaq -all
+out
+zpaq x p???.zpaq -to ex
+tree ex
+zpaq x p???.zpaq -index idx2.zpaq
+hash idx2.zpaq
+
+scenario multipart
+epoch 1735689600
+zpaq a m???.zpaq tree
+hash m001.zpaq
+mutate 1
+epoch 1735776000
+zpaq a m???.zpaq tree
+hash m002.zpaq
+mutate 2
+zpaq a m???.zpaq tree
+hash m003.zpaq
+zpaq l m???.zpaq -all
+out
+zpaq x m???.zpaq -to ex
+tree ex
+
+scenario encrypted-index
+fixedrandom
+epoch 1735689600
+zpaq a e???.zpaq tree -index eidx.zpaq -key k
+hash e001.zpaq
+hash eidx.zpaq
+mutate 1
+epoch 1735776000
+zpaq a e???.zpaq tree -index eidx.zpaq -key k
+hash e002.zpaq
+hash eidx.zpaq
+zpaq x e???.zpaq -key k -to ex
+tree ex
+zpaq x e???.zpaq -key k -index eidx2.zpaq
+hash eidx2.zpaq
+
+scenario encrypted
+fixedrandom
+zpaq a z.zpaq tree -key secret -until 20250101000000
+hash z.zpaq
+mutate 1
+zpaq a z.zpaq tree -key secret -until 20250102000000
+hash z.zpaq
+zpaq l z.zpaq -key secret -all
+out
+zpaq x z.zpaq -key secret -to ex
+tree ex
+zpaq x z.zpaq -key secret -repack plain.zpaq -all
+hash plain.zpaq
+
+scenario repack
+zpaq a z.zpaq tree -until 20250101000000
+mutate 1
+zpaq a z.zpaq tree -until 20250102000000
+zpaq x z.zpaq tree/a.txt tree/sub -repack r.zpaq
+hash r.zpaq
+zpaq l r.zpaq
+out

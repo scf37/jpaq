@@ -222,9 +222,30 @@ final class Jidac {
     throw new ExitException(1);
   }
 
+  /** Overrides the current time (null = system clock / SOURCE_DATE_EPOCH). */
+  static volatile Instant clockOverride;
+
+  /**
+   * The current time: the system clock, unless the environment variable SOURCE_DATE_EPOCH (seconds
+   * since 1970) is set, which makes archives reproducible.
+   */
+  static Instant currentTime() {
+    Instant o = clockOverride;
+    if (o != null) return o;
+    String e = System.getenv("SOURCE_DATE_EPOCH");
+    if (e != null && !e.isBlank()) {
+      try {
+        return Instant.ofEpochSecond(Long.parseLong(e.trim()));
+      } catch (NumberFormatException ex) {
+        // fall through to the system clock
+      }
+    }
+    return Instant.now();
+  }
+
   /** Current time as a decimal date. */
   static long now() {
-    ZonedDateTime t = Instant.now().atZone(ZoneOffset.UTC);
+    ZonedDateTime t = currentTime().atZone(ZoneOffset.UTC);
     return t.getYear() * 10000000000L + t.getMonthValue() * 100000000L
         + t.getDayOfMonth() * 1000000L + t.getHour() * 10000L + t.getMinute() * 100L
         + t.getSecond();
