@@ -214,6 +214,10 @@ public final class Compressor {
       if (nr < 0 || nr > bufsize || nr > nbuf) throw ZpaqException.error("invalid read size");
       if (nr <= 0) return false;
       if (n >= 0) n -= nr;
+      if (!verify && enc.isStored()) {
+        enc.compressStored(buf, 0, nr);
+        continue;
+      }
       for (int i = 0; i < nr; i++) {
         int ch = buf[i] & 255;
         enc.compress(ch);

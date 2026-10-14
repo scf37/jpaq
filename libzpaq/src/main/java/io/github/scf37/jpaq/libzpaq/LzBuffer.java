@@ -43,8 +43,8 @@ final class LzBuffer implements ZpaqReader {
   private final int shift2;         // how far to shift h1, h2 per hash
   private final int minMatchBoth;   // max(minMatch, minMatch2)
   private final int rb;             // number of level 1 r bits in match code
-  private int bits;                 // pending output bits (level 1)
-  private int nbits;                // number of bits in bits
+  private long bits;                // pending output bits (level 1), LSB first
+  private int nbits;                // number of bits in bits (0..31 between calls)
   private int rpos;
   private int wpos;                 // read, write pointers
   private int idx;                  // BWT index
@@ -109,22 +109,31 @@ final class LzBuffer implements ZpaqReader {
     isa = null;
   }
 
-  // write k bits of x
+  // write k (0..31) bits of x. Whole bytes are written 4 at a time; the stream is the same as
+  // with the byte at a time writer of the C++ version.
   private void putb(int x, int k) {
-    x &= (1 << k) - 1;
-    bits |= x << nbits;
+    bits |= (long) (x & ((1 << k) - 1)) << nbits;
     nbits += k;
-    while (nbits > 7) {
-      buf[wpos++] = (byte) bits;
-      bits >>>= 8;
-      nbits -= 8;
+    if (nbits >= 32) {
+      final int w = wpos;
+      buf[w] = (byte) bits;
+      buf[w + 1] = (byte) (bits >>> 8);
+      buf[w + 2] = (byte) (bits >>> 16);
+      buf[w + 3] = (byte) (bits >>> 24);
+      wpos = w + 4;
+      bits >>>= 32;
+      nbits -= 32;
     }
   }
 
-  // write last byte
+  // write the pending bits, the last byte padded with zeros
   private void flush() {
-    if (nbits > 0) buf[wpos++] = (byte) bits;
-    bits = nbits = 0;
+    for (; nbits > 0; nbits -= 8) {
+      buf[wpos++] = (byte) bits;
+      bits >>>= 8;
+    }
+    bits = 0;
+    nbits = 0;
   }
 
   // write 1 byte
@@ -344,10 +353,7 @@ final class LzBuffer implements ZpaqReader {
       int ll = lg(lit);
       putb(0, 2);
       --ll;
-      while (--ll >= 0) {
-        putb(1, 1);
-        putb((lit >>> ll) & 1, 1);
-      }
+      while (--ll >= 0) putb(1 | ((lit >>> ll) & 1) << 1, 2);  // 1, then bit ll
       putb(0, 1);
       while (lit != 0) putb(in[i - lit--] & 255, 8);
     } else {
@@ -372,10 +378,7 @@ final class LzBuffer implements ZpaqReader {
       int lo = lg(off) - 1 - rb;
       putb((lo + 8) >> 3, 2);  // mm
       putb(lo & 7, 3);         // mmm
-      while (--ll >= 2) {      // n
-        putb(1, 1);
-        putb((len >>> ll) & 1, 1);
-      }
+      while (--ll >= 2) putb(1 | ((len >>> ll) & 1) << 1, 2);  // n: 1, then bit ll
       putb(0, 1);
       putb(len & 3, 2);        // ll
       putb(off, rb);           // r
