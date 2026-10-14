@@ -51,6 +51,8 @@ final class LzBuffer implements ZpaqReader {
   private int[] sa;                 // suffix array for BWT or LZ77-SA
   private int[] isa;                // inverse suffix array for LZ77-SA
   private final byte[] buf = new byte[BUFSIZE];  // output buffer
+  private final int[] cand;         // match candidates of one position
+  private int touch;                // keeps the early reads of the candidates alive
 
   /**
    * @param inbuf input block; the E8E9 transform is applied to it in place if args[1] &gt; 4
@@ -66,6 +68,7 @@ final class LzBuffer implements ZpaqReader {
     maxLiteral = BUFSIZE / 4;
     lookahead = args[6];
     bucket = (1 << args[4]) - 1;
+    cand = new int[bucket + 1];
     final boolean sufArray = args[5] - args[0] >= 21;
     checkbits = !sufArray ? 12 - args[0] : 17 + args[0];
     long htlen;
@@ -251,23 +254,35 @@ final class LzBuffer implements ZpaqReader {
           }
         }
 
-        // Search the lower order context
+        // Search the lower order context. First collect the candidates whose check bits agree and
+        // touch their data, so that the cache misses of all candidates overlap.
         if (minMatch2 == 0 || blen < minMatch2) {
-          for (int k = 0; k <= bucket; ++k) {
-            int p = ht[h1 ^ k];
-            if (p != 0 && i + 3 < n && (p & mask) == (in[i + 3] & 255 & mask)) {
-              p >>>= checkbits;
-              if (Integer.compareUnsigned(p, i) < 0 && i + blen <= n
-                  && at(p + blen - 1) == at(i + blen - 1)) {
-                int l;
-                for (l = 0; i + l < n && l < maxMatch && in[p + l] == in[i + l]; ++l) { }
-                int score = l * 8 - lg(i - p) - 2 * (lit > 0 ? 1 : 0) - 11;
-                if (score > bscore) {
-                  blen = l;
-                  bp = p;
-                  blit = 0;
-                  bscore = score;
-                }
+          int cnt = 0;
+          int tch = 0;
+          if (i + 3 < n) {
+            final int chk = in[i + 3] & 255 & mask;
+            for (int k = 0; k <= bucket; ++k) {
+              final int p = ht[h1 ^ k];
+              if (p != 0 && (p & mask) == chk) {
+                final int q = p >>> checkbits;
+                cand[cnt++] = q;
+                tch += in[q < n ? q : 0];
+              }
+            }
+          }
+          touch += tch;
+          for (int c = 0; c < cnt; ++c) {
+            final int p = cand[c];
+            if (Integer.compareUnsigned(p, i) < 0 && i + blen <= n
+                && at(p + blen - 1) == at(i + blen - 1)) {
+              int l;
+              for (l = 0; i + l < n && l < maxMatch && in[p + l] == in[i + l]; ++l) { }
+              int score = l * 8 - lg(i - p) - 2 * (lit > 0 ? 1 : 0) - 11;
+              if (score > bscore) {
+                blen = l;
+                bp = p;
+                blit = 0;
+                bscore = score;
               }
             }
             if (blen >= 128) break;
