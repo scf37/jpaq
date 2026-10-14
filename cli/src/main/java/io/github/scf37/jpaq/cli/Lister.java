@@ -1,5 +1,6 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.InfoLine;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -116,35 +117,41 @@ final class Lister {
       // List selected comparison results
       if (j.nottype.indexOf((char) p.data) < 0 && p.data != 0) {
         if (!p.name.isEmpty() && p.name.charAt(p.name.length() - 1) != '/') usize += p.size;
-        Console.printf("%c %s %12.0f ", (char) p.data, Dates.dateToString(p.date), p.size + 0.0);
-        if (!j.noattributes) Console.printf("%s ", Dates.attrToString(p.attr));
-        Console.print(p.name);
+        StringBuilder t = new StringBuilder();
+        t.append(String.format(java.util.Locale.ROOT, "%c %s %12.0f ", (char) p.data,
+            Dates.dateToString(p.date), p.size + 0.0));
+        if (!j.noattributes) t.append(Dates.attrToString(p.attr)).append(' ');
+        t.append(p.name);
+        StringBuilder fr = new StringBuilder();
         if (j.summary < 0) {  // frag pointers
           boolean hyphen = false;
           final int n = p.ptrSize();
           for (int k = 0; k < n; ++k) {
             if (k == 0 || k == n - 1 || p.ptr(k) != p.ptr(k - 1) + 1
                 || p.ptr(k) != p.ptr(k + 1) - 1) {
-              if (!hyphen) Console.print(" ");
+              if (!hyphen) fr.append(' ');
               hyphen = false;
-              Console.printf("%d", p.ptr(k));
+              fr.append(p.ptr(k));
             } else {
-              if (!hyphen) Console.print("-");
+              if (!hyphen) fr.append('-');
               hyphen = true;
             }
           }
         }
+        t.append(fr);
         int v;  // list version updates, deletes, compressed size
         if (j.all > 0 && p.name.length() == j.all + 1 && (v = Strs.atoi(p.name)) > 0
             && v < j.ver.size()) {  // version info
           Ver vr = j.ver.get(v);
-          Console.printf(" +%d -%d -> %1.0f", vr.updates, vr.deletes,
-              (v + 1 < j.ver.size() ? j.ver.get(v + 1).offset : csize) - vr.offset + 0.0);
+          t.append(String.format(java.util.Locale.ROOT, " +%d -%d -> %1.0f", vr.updates, vr.deletes,
+              (v + 1 < j.ver.size() ? j.ver.get(v + 1).offset : csize) - vr.offset + 0.0));
           if (j.summary < 0)  // print fragment range
-            Console.printf(" %d-%d", vr.firstFragment,
-                v + 1 < j.ver.size() ? j.ver.get(v + 1).firstFragment - 1 : j.ht.size() - 1);
+            t.append(String.format(java.util.Locale.ROOT, " %d-%d", vr.firstFragment,
+                v + 1 < j.ver.size() ? j.ver.get(v + 1).firstFragment - 1 : j.ht.size() - 1));
         }
-        Console.print("\n");
+        t.append('\n');
+        Console.emit(new InfoLine.ListEntry((char) p.data, p.date, p.size, p.attr, p.name,
+            fr.toString(), t.toString()));
       }
     }  // end for i = each file version
 
@@ -176,11 +183,12 @@ final class Lister {
     }
 
     // Print archive statistics
-    Console.printf("\n%1.6f MB of %1.6f MB (%d files) shown\n"
+    Console.emit(new InfoLine.ListSummary(usize / 1000000.0, allsize / 1000000.0, nfiles,
+        String.format(java.util.Locale.ROOT, "\n%1.6f MB of %1.6f MB (%d files) shown\n"
         + "  -> %1.6f MB (%d refs to %d of %d frags) after dedupe\n"
         + "  -> %1.6f MB compressed.\n",
         usize / 1000000.0, allsize / 1000000.0, nfiles, ddsize / 1000000.0, refs, nfrags,
-        j.ht.size() - 1, (csize + j.dhsize - j.dcsize) / 1000000.0);
+        j.ht.size() - 1, (csize + j.dhsize - j.dcsize) / 1000000.0)));
     if (unknownFrags != 0) Console.printf("%d fragments have unknown size\n", unknownFrags);
     if (j.files.size() > 0)
       Console.printf("%d =same, %d #different, %d +external, %d -internal\n", matches, mismatches,

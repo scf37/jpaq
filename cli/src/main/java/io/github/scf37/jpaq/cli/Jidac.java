@@ -1,6 +1,8 @@
 package io.github.scf37.jpaq.cli;
 
+import io.github.scf37.jpaq.api.ErrorLine;
 import io.github.scf37.jpaq.api.Format;
+import io.github.scf37.jpaq.api.InfoLine;
 import io.github.scf37.jpaq.libzpaq.Decompresser;
 import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
@@ -58,6 +60,9 @@ final class Jidac {
   TreeMap<String, DT> edt = new TreeMap<>();   // set of external files to add or compare
   List<Block> block = new ArrayList<>();       // list of data blocks to extract
   List<Ver> ver = new ArrayList<>();           // version info
+
+  private static final InfoLine INCOMPLETE =
+      new InfoLine.IncompleteTransaction("Incomplete transaction ignored\n");
 
   /** Time of program start in milliseconds, for progress reports. */
   static long globalStart;
@@ -295,7 +300,8 @@ final class Jidac {
     version = DEFAULT_VERSION;
     date = 0;
 
-    Console.print("zpaq v" + ZPAQ_VERSION + " journaling archiver, Java port\n");
+    Console.emit(new InfoLine.Banner(ZPAQ_VERSION,
+        "zpaq v" + ZPAQ_VERSION + " journaling archiver, Java port\n"));
 
     // Get date
     date = now();
@@ -420,7 +426,8 @@ final class Jidac {
       jidac.version = DEFAULT_VERSION;
       jidac.readArchive(archive, null);
       version += jidac.ver.size() - 1;
-      Console.printf("Version %1.0f\n", version + .0);
+      Console.emit(new InfoLine.VersionSelected(version,
+          String.format(java.util.Locale.ROOT, "Version %1.0f\n", version + .0)));
     }
 
     // Execute command
@@ -485,14 +492,14 @@ final class Jidac {
     InputArchive in = new InputArchive(io, arc, password);
     if (!in.isOpen()) {
       if (command != 'a') {
-        Console.eprint(arc + " not found.\n");
+        Console.emit(new ErrorLine.ArchiveNotFound(arc, arc + " not found.\n"));
         if (errors != null) ++errors[0];
       }
       return 0;
     }
-    Console.print(arc);
-    if (version == DEFAULT_VERSION) Console.print(": ");
-    else Console.printf(" -until %1.0f: ", version + 0.0);
+    Console.emit(new InfoLine.ArchiveReading(arc, version == DEFAULT_VERSION ? -1 : version,
+        arc + (version == DEFAULT_VERSION ? ": "
+            : String.format(java.util.Locale.ROOT, " -until %1.0f: ", version + 0.0))));
     Console.flush();
 
     // Test password
@@ -616,7 +623,7 @@ final class Jidac {
                   final long skew = adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0;
                   dataOffset = dataOffsetReal + skew;
                   final long jmp = adia == Dialect.JPAQ ? 0 : btol(osd, 0);
-                  if (jmp < 0) Console.print("Incomplete transaction ignored\n");
+                  if (jmp < 0) Console.emit(INCOMPLETE);
                   if (jmp < 0
                       || (version < 19000000000000L && (long) ver.size() > version)
                       || (version >= 19000000000000L && version < fdate)) {
@@ -781,7 +788,9 @@ final class Jidac {
         }  // endblock
       } catch (RuntimeException | OutOfMemoryError e) {
         in.seek(-d.buffered(), InputArchive.Whence.CUR);
-        Console.eprintf("Skipping block at %1.0f: %s\n", (double) blockOffset, what(e));
+        Console.emit(new ErrorLine.BlockSkipped(blockOffset, what(e),
+            String.format(java.util.Locale.ROOT, "Skipping block at %1.0f: %s\n",
+                (double) blockOffset, what(e))));
         if (errors != null) ++errors[0];
       }
     }  // end while !done
@@ -792,7 +801,7 @@ final class Jidac {
       // A transaction that never got its file list was not committed
       Ver lv = ver.get(ver.size() - 1);
       if (lv.updates + lv.deletes == 0) {
-        Console.print("Incomplete transaction ignored\n");
+        Console.emit(INCOMPLETE);
         ver.remove(ver.size() - 1);
         ht.truncate(lv.firstFragment);
         while (block.size() > 0 && block.get(block.size() - 1).start >= lv.firstFragment)
@@ -801,8 +810,10 @@ final class Jidac {
     }
     readDialect = adia;
     virtualEnd = blockOffset + (adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0);
-    Console.printf("%d versions, %d files, %d fragments, %1.6f MB\n", ver.size() - 1, nfiles,
-        ht.size() - 1, blockOffset / 1000000.0);
+    Console.emit(new InfoLine.ArchiveRead(ver.size() - 1, nfiles, ht.size() - 1,
+        blockOffset / 1000000.0,
+        String.format(java.util.Locale.ROOT, "%d versions, %d files, %d fragments, %1.6f MB\n",
+            ver.size() - 1, nfiles, ht.size() - 1, blockOffset / 1000000.0)));
 
     // Calculate file sizes
     for (DT p : dt.values()) {
@@ -933,12 +944,11 @@ final class Jidac {
     if (td > ts) td = ts;
     if (td >= 1000000) {
       double eta = 0.001 * (mtime() - globalStart) * (ts - td) / (td + 1.0);
-      Console.printf("%5.2f%% %d:%02d:%02d ", td * 100.0 / (ts + 0.5), (int) (eta / 3600),
-          (int) (eta / 60) % 60, (int) eta % 60);
-      if (sum > 0) {
-        Console.print("\r");
-        Console.flush();
-      }
+      final double percent = td * 100.0 / (ts + 0.5);
+      Console.emit(new InfoLine.Progress(percent, (int) eta,
+          String.format(java.util.Locale.ROOT, "%5.2f%% %d:%02d:%02d %s", percent,
+              (int) (eta / 3600), (int) (eta / 60) % 60, (int) eta % 60, sum > 0 ? "\r" : "")));
+      if (sum > 0) Console.flush();
     }
   }
 }
