@@ -310,22 +310,19 @@ final class Adder {
     long exe = 0;        // number of fragments containing x86 (exe, dll)
     final int ON = 4;    // number of order-1 tables to save
     byte[] o1prev = new byte[ON * 256];  // last ON order 1 predictions
-    byte[] fragbuf = new byte[(int) maxFragment];
+    final FragmentScanner sc = new FragmentScanner((int) maxFragment, (int) minFragment, fragment);
+    final byte[] fragbuf = sc.fragbuf;
     List<Integer> blocklist = new ArrayList<>();  // list of starting fragments
 
     // For each file to be added
     for (int fi = 0; fi <= vf.size(); ++fi) {
       ArchiveFile in = null;
-      final int BUFSIZE = 1 << 16;  // input buffer
-      byte[] buf = new byte[BUFSIZE];
-      int bufptr = 0;
-      int buflen = 0;  // read pointer and limit
       DT p = null;
       if (fi < vf.size()) {
         p = vf.get(fi);
 
         // Open input file
-        bufptr = buflen = 0;
+        sc.newFile();
         Exception[] err = new Exception[1];
         in = ArchiveFile.openRead(p.name, err);
         if (in == null) {  // skip if not found
@@ -348,56 +345,11 @@ final class Adder {
         byte[] sha1result = new byte[20];  // fragment hash
         byte[] o1 = new byte[256];         // order 1 context -> predicted byte
         if (fi < vf.size()) {
-          int c1 = 0;  // previous byte
-          int h = 0;   // rolling hash for finding fragment boundaries
           Sha1 sha1 = new Sha1();
-          final int hthresh = fragment <= 22 ? 1 << (22 - fragment) : 0;
-          while (true) {
-            if (bufptr >= buflen) {
-              bufptr = 0;
-              buflen = in.read(buf, 0, BUFSIZE);
-            }
-            if (bufptr >= buflen) {
-              c = -1;
-              break;
-            }
-            // scan up to the end of the buffer or the maximum fragment size
-            final int start = bufptr;
-            final int end = (int) Math.min(buflen, start + (maxFragment - sz));
-            int j = start;
-            int hh = h;
-            int cc1 = c1;
-            long hit = 0;
-            // sz + (j - start) is the fragment size after consuming byte j
-            final int minj = (int) Math.max(start, start + minFragment - sz - 1);
-            boolean cut = false;
-            for (; j < end; ) {
-              final int cx = buf[j++] & 255;
-              if (cx == (o1[cc1] & 255)) {
-                hh = (hh + cx + 1) * 314159265;
-                ++hit;
-              } else {
-                hh = (hh + cx + 1) * 271828182;
-              }
-              o1[cc1] = (byte) cx;
-              cc1 = cx;
-              if (j > minj && Integer.compareUnsigned(hh, hthresh) < 0) {
-                cut = true;
-                break;
-              }
-            }
-            System.arraycopy(buf, start, fragbuf, sz, j - start);
-            sz += j - start;
-            bufptr = j;
-            h = hh;
-            c1 = cc1;
-            hits += hit;
-            if (cut || sz >= maxFragment) {
-              c = 0;
-              break;
-            }
-          }
-          sha1.write(fragbuf, 0, sz);
+          c = sc.scan(in, sha1);
+          sz = sc.sz;
+          hits = sc.hits;
+          o1 = sc.o1;
           totalDone += sz;
 
           // Look for matching fragment
