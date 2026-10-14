@@ -10,6 +10,18 @@
   <packaging>pom</packaging>
   <name>jpaq</name>
   <description>Java port of the ZPAQ journaling archiver (libzpaq + zpaq CLI)</description>
+  <url>https://github.com/scf37/jpaq</url>
+  <licenses>
+    <license>
+      <name>The Unlicense (public domain)</name>
+      <url>https://unlicense.org/</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <scm>
+    <url>https://github.com/scf37/jpaq</url>
+    <connection>scm:git:https://github.com/scf37/jpaq.git</connection>
+  </scm>
 
   <modules>
     <module>libzpaq</module>
