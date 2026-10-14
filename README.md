@@ -69,6 +69,22 @@ Differences from the C++ program:
 * The banner line says "Java port" instead of the compile date; the `-DDEBUG` help for advanced
   options of the C++ debug build is not included (the options themselves work).
 
+### Calling the archiver from Java
+
+Applications (for example a backup program that also writes a zpaq-readable archive) can run the
+command line in-process through `io.github.scf37.jpaq.cli.Zpaq`, without spawning a JVM:
+
+```java
+Zpaq.Result r = Zpaq.run(workDir, "a", "backup.zpaq", "data", "-m2", "-key", "secret");
+if (!r.ok()) throw new IOException(r.stderr());      // exitCode: 0 OK, 1 warnings, 2 errors
+String listing = Zpaq.run(workDir, "l", "backup.zpaq").stdout();
+```
+
+Arguments are those of the command line; relative paths resolve against `workDir`; output is
+captured in the result and `System.exit` is never called. Calls are serialized. (An unexpected
+internal error in a compression worker thread still terminates the JVM, as in the CLI.)
+The same is available as `Main.run(Path, String[])` for the exit code only.
+
 ## Library
 
 ```java
