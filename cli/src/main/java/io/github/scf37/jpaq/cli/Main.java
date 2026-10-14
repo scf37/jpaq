@@ -54,15 +54,36 @@ public final class Main {
   }
 
   /**
+   * Runs the command line (without the program name) with relative file names resolved against
+   * {@code workDir}. Not safe to call concurrently from several threads. Returns the exit code.
+   */
+  public static int run(Path workDir, String[] args) {
+    Fs.setWorkingDirectory(workDir);
+    try {
+      return run(args);
+    } finally {
+      Fs.setWorkingDirectory(null);
+    }
+  }
+
+  /**
    * Runs the command line (without the program name). Returns the exit code: 0 OK, 1 warnings, 2
    * errors.
    */
   public static int run(String[] args) {
+    String[] r = new String[args.length + 1];
+    r[0] = "zpaq";
+    for (int i = 0; i < args.length; i++) r[i + 1] = Strs.toBytes(args[i]);
+    return runBytes(r);
+  }
+
+  /** Runs with arguments as byte strings; argv[0] is the program name. */
+  private static int runBytes(String[] argv) {
     Jidac.globalStart = Jidac.mtime();
     int errorcode;
     try {
       Jidac jidac = new Jidac();
-      errorcode = jidac.doCommand(byteArgs(args));
+      errorcode = jidac.doCommand(argv);
     } catch (ExitException e) {
       Console.flush();
       return e.code;
@@ -81,7 +102,7 @@ public final class Main {
   }
 
   public static void main(String[] args) {
-    int rc = run(args);
+    int rc = runBytes(byteArgs(args));
     Console.flush();
     Console.err.flush();
     System.exit(rc);
