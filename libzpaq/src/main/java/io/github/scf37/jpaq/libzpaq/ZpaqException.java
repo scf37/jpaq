@@ -16,7 +16,7 @@ public class ZpaqException extends RuntimeException {
   }
 
   /** Throws a {@link ZpaqException} with the given message; never returns normally. */
-  static ZpaqException error(String message) {
+  public static ZpaqException error(String message) {
     return new ZpaqException(message);
   }
 }
