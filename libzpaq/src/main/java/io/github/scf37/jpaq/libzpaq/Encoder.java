@@ -63,4 +63,25 @@ final class Encoder {
       if (c >= 0) buf[low++] = (byte) c;
     }
   }
+
+  /** Whether the block has no model, so that {@link #compressStored} can be used. */
+  boolean isStored() {
+    return !pr.isModeled();
+  }
+
+  /** Same as {@link #compress(int)} for each of {@code b[off..off+len-1]}, for unmodeled blocks. */
+  void compressStored(byte[] b, int off, int len) {
+    while (len > 0) {
+      if (low == buf.length) {
+        compress(b[off++] & 255);  // writes the full buffer
+        --len;
+        continue;
+      }
+      final int k = Math.min(len, buf.length - low);
+      System.arraycopy(b, off, buf, low, k);
+      low += k;
+      off += k;
+      len -= k;
+    }
+  }
 }
