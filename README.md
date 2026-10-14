@@ -108,7 +108,7 @@ while (d.findBlock()) {
 
 `ZpaqReader` / `ZpaqWriter` are the byte source / sink abstractions (`of(InputStream)`,
 `of(OutputStream)`, `of(byte[])` adapters are provided). `Crypto` has `stretchKey` (scrypt),
-`random`; `AesCtr`, `Sha1`, `Sha256`, `MemoryBuffer` and `Zpaql` are the other public building
+`random`; `AesCtr`, `Sha1`, `Sha256` and `MemoryBuffer` are the other public building
 blocks. The classes follow the structure of `libzpaq.h`, whose documentation (in [`cpp/libzpaq.h`](cpp/libzpaq.h))
 describes the method strings, the ZPAQL language and the file format.
 

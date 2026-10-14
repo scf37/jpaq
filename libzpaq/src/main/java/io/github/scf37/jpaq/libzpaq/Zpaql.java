@@ -7,7 +7,7 @@ package io.github.scf37.jpaq.libzpaq;
  * <p>Registers A, B, C, D, R0..R255 are 32 bit (stored in {@code int} and treated as unsigned
  * where it matters). M is an array of 2^m bytes and H an array of 2^h 32 bit values.
  */
-public final class Zpaql {
+final class Zpaql {
   /** Destination of the OUT instruction, or null to discard. */
   ZpaqWriter output;
   /** Checksum computer fed with all OUT bytes, or null. */
@@ -35,7 +35,7 @@ public final class Zpaql {
   private boolean f;
   private int pc;
 
-  public Zpaql() {
+  Zpaql() {
     clear();
   }
 
@@ -48,14 +48,6 @@ public final class Zpaql {
     h = new int[0];
     m = new byte[0];
     r = new int[0];
-  }
-
-  public void setOutput(ZpaqWriter out) {
-    output = out;
-  }
-
-  public void setSha1(Sha1 s) {
-    sha1 = s;
   }
 
   /** Returns element {@code i} of H (index taken modulo the array size). */

@@ -64,6 +64,15 @@ final class Adder {
 
   /** Adds or deletes files from the archive. Returns 1 if error else 0. */
   int add() {
+    CompressJob[] jobHolder = new CompressJob[1];
+    try {
+      return add(jobHolder);
+    } finally {
+      if (jobHolder[0] != null) jobHolder[0].abort();  // no-op if finished normally
+    }
+  }
+
+  private int add(CompressJob[] jobHolder) {
     // Read archive or index into ht, dt, ver.
     int[] errors = {0};
     final boolean archiveExists = Fs.exists(Strs.subpart(j.archive, 1));
@@ -213,6 +222,7 @@ final class Adder {
     // Start compress and write jobs
     final int ntid = j.threads * 2 - 1;
     CompressJob job = new CompressJob(j.threads, ntid, out);
+    jobHolder[0] = job;
     Console.printf("Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
         totalSize / 1000000.0, vf.size(), method, j.threads, Dates.dateToString(j.date));
 
