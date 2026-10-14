@@ -29,6 +29,8 @@ final class ZpaqlJit {
 
   private static final boolean ENABLED = !"false".equals(System.getProperty("jpaq.zpaqlJit"));
   private static final Object NONE = new Object();
+  /** Upper bound for the number of generated classes kept alive. */
+  private static final int MAX_CLASSES = 512;
   private static final Map<ByteBuffer, Object> CACHE = new ConcurrentHashMap<>();
 
   private static final ClassDesc CD_ZPAQL = ClassDesc.of(ZpaqlJit.class.getPackageName(), "Zpaql");
@@ -47,6 +49,7 @@ final class ZpaqlJit {
     ByteBuffer key = ByteBuffer.wrap(prog);
     Object o = CACHE.get(key);
     if (o == null) {
+      if (CACHE.size() >= MAX_CLASSES) return null;  // too many distinct models
       Code c = null;
       try {
         c = compile(prog);

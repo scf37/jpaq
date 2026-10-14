@@ -22,6 +22,8 @@ final class PredictorJit {
 
   private static final boolean ENABLED = !"false".equals(System.getProperty("jpaq.predictorJit"));
   private static final Object NONE = new Object();
+  /** Upper bound for the number of generated classes kept alive. */
+  private static final int MAX_CLASSES = 512;
   private static final Map<ByteBuffer, Object> CACHE = new ConcurrentHashMap<>();
 
   private static final String PKG = PredictorJit.class.getPackageName();
@@ -47,6 +49,7 @@ final class PredictorJit {
     ByteBuffer bb = ByteBuffer.wrap(key);
     Object o = CACHE.get(bb);
     if (o == null) {
+      if (CACHE.size() >= MAX_CLASSES) return null;  // too many distinct models
       Predictor.Code c = null;
       try {
         c = generate(key);
