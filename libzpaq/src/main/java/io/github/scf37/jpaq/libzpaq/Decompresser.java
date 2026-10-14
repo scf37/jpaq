@@ -31,6 +31,26 @@ public final class Decompresser {
   private State state = State.BLOCK;
   private DecodeState decodeState = DecodeState.FIRSTSEG;
 
+  private static final int[] JPAQ_HASH = new int[4];
+
+  static {
+    final int[] mul = {12, 20, 28, 44};
+    final int[] tag = {0x37, 0x6b, 0x53, 0x74, 0xa0, 0x31, 0x83, 0xd3, 0x8c, 0xb2, 0x28, 0xb0, 0xd3,
+        Dialect.JPAQ.marker(), 'P', 'Q'};
+    for (int k = 0; k < 4; k++) {
+      int h = 0;
+      for (int b : tag) h = h * mul[k] + b;
+      JPAQ_HASH[k] = h;
+    }
+  }
+
+  private Dialect dialect = Dialect.STANDARD;
+
+  /** The block magic of the block found by the last {@link #findBlock}. */
+  public Dialect dialect() {
+    return dialect;
+  }
+
   public void setInput(ZpaqReader in) {
     dec.in = in;
   }
@@ -41,22 +61,40 @@ public final class Decompresser {
    * @param mem if not null, mem[0] is set to the approximate memory needed to decompress
    */
   public boolean findBlock(double[] mem) {
-    // Find start of block
+    // Find start of block: the 16 byte string tag + "zPQ" (STANDARD) or tag + "jPQ" (JPAQ). The
+    // multipliers are multiples of 4, so each hash only depends on the last 16 bytes read. The
+    // standard hashes start from values that stand for a preceding locator tag, so that a block
+    // at the very start of a stream is also found; the JPAQ ones always need the whole string.
     int h1 = 0x3D49B113;
     int h2 = 0x29EB7F93;
     int h3 = 0x2614BE13;
     int h4 = 0x3828EB13;
-    // Rolling hashes initialized to hash of first 13 bytes
+    int g1 = 0;
+    int g2 = 0;
+    int g3 = 0;
+    int g4 = 0;
     int c;
+    Dialect found = null;
     while ((c = dec.get()) != -1) {
       h1 = h1 * 12 + c;
       h2 = h2 * 20 + c;
       h3 = h3 * 28 + c;
       h4 = h4 * 44 + c;
-      if (h1 == 0xB16B88F1 && h2 == 0xFF5376F1 && h3 == 0x72AC5BF1 && h4 == 0x2F909AF1)
-        break;  // hash of 16 byte string
+      g1 = g1 * 12 + c;
+      g2 = g2 * 20 + c;
+      g3 = g3 * 28 + c;
+      g4 = g4 * 44 + c;
+      if (h1 == 0xB16B88F1 && h2 == 0xFF5376F1 && h3 == 0x72AC5BF1 && h4 == 0x2F909AF1) {
+        found = Dialect.STANDARD;  // hash of 16 byte string
+        break;
+      }
+      if (g1 == JPAQ_HASH[0] && g2 == JPAQ_HASH[1] && g3 == JPAQ_HASH[2] && g4 == JPAQ_HASH[3]) {
+        found = Dialect.JPAQ;
+        break;
+      }
     }
     if (c == -1) return false;
+    dialect = found;
 
     // Read header
     if ((c = dec.get()) != 1 && c != 2) throw ZpaqException.error("unsupported ZPAQ level");
