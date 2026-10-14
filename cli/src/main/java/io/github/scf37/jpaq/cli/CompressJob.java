@@ -41,6 +41,8 @@ final class CompressJob {
   private final Semaphore compressors;   // number of compressors available to run
   private final List<Thread> threads = new ArrayList<>();
 
+  private volatile boolean finished;
+
   /** Compressed block sizes. */
   final List<Integer> csize = Collections.synchronizedList(new ArrayList<>());
 
@@ -93,8 +95,30 @@ final class CompressJob {
     }
   }
 
+  // Waits for a permit; returns false if the thread was interrupted (job aborted).
+  private static boolean acquire(Semaphore s) {
+    try {
+      s.acquire();
+      return true;
+    } catch (InterruptedException e) {
+      return false;
+    }
+  }
+
+  /** Stops all threads without finishing the queue (after an error in the main thread). */
+  void abort() {
+    if (finished) return;
+    finished = true;
+    for (Thread t : threads) t.interrupt();  // idle threads exit; busy ones stop when done
+  }
+
   /** Waits for all threads to finish (after writing the end of input marker). */
   void join() {
+    join0();
+    finished = true;
+  }
+
+  private void join0() {
     for (Thread t : threads) {
       boolean interrupted = false;
       while (true) {
@@ -125,7 +149,7 @@ final class CompressJob {
 
       // Work until done
       while (true) {
-        cj.full.acquireUninterruptibly();
+        if (!acquire(cj.full)) return;
         mutex.lock();
         try {
           // Check for end of input
@@ -137,7 +161,7 @@ final class CompressJob {
         } finally {
           mutex.unlock();
         }
-        compressors.acquireUninterruptibly();
+        if (!acquire(compressors)) return;
         try {
           Libzpaq.compressBlock(cj.in, cj.out, cj.method, Strs.getBytes(cj.filename),
               cj.comment.isEmpty() ? null : Strs.getBytes(cj.comment), true);
@@ -168,7 +192,7 @@ final class CompressJob {
       while (true) {
         // wait for something to write
         CJ cj = q[front];  // no other threads move front
-        cj.compressed.acquireUninterruptibly();
+        if (!acquire(cj.compressed)) return;
 
         // Quit if end of input
         mutex.lock();
