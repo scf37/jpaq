@@ -66,8 +66,10 @@ final class PredictorJit {
   private static Predictor.Code generate(byte[] key) throws ReflectiveOperationException {
     final int n = key[0] & 255;
     final int[] types = new int[n];
+    final int[][] par = new int[n][6];  // c1..c5 at 1..5
     for (int i = 0, cp = 1; i < n; i++) {
       types[i] = key[cp] & 255;
+      for (int k = 1; k < Components.size(types[i]); k++) par[i][k] = key[cp + k] & 255;
       cp += Components.size(types[i]);
     }
     final ClassDesc self = ClassDesc.of(PKG, "PredictorCode");
@@ -80,9 +82,9 @@ final class PredictorJit {
                   ConstantDescs.MTD_void)
               .return_());
       cb.withMethodBody("predict", mt(I, CD_PRED), ClassFile.ACC_PUBLIC,
-          cob -> emitPredict(cob, types));
+          cob -> emitPredict(cob, types, par));
       cb.withMethodBody("update", mt(V, CD_PRED, I), ClassFile.ACC_PUBLIC,
-          cob -> emitUpdate(cob, types));
+          cob -> emitUpdate(cob, types, par));
     });
     MethodHandles.Lookup l = MethodHandles.lookup().defineHiddenClass(bytes, true);
     try {
@@ -97,8 +99,12 @@ final class PredictorJit {
     c.aload(1).getfield(CD_PRED, name, type);
   }
 
+  private static int mask(long size) {
+    return (int) (size - 1);
+  }
+
   // predict(Predictor pr): slots 2 p, 3 h, 4 comp, 5 c8, 6 hmap4
-  private static void emitPredict(CodeBuilder c, int[] types) {
+  private static void emitPredict(CodeBuilder c, int[] types, int[][] par) {
     field(c, "p", CD_INTS); c.astore(2);
     field(c, "h", CD_INTS); c.astore(3);
     field(c, "comp", CD_COMPS); c.astore(4);
@@ -106,40 +112,48 @@ final class PredictorJit {
     field(c, "hmap4", I); c.istore(6);
     for (int i = 0; i < types.length; i++) {
       final int t = types[i];
+      final int[] q = par[i];
       if (t == Components.CONS) continue;
-      c.aload(4).loadConstant(i).aaload();  // cr
+      if (t != Components.AVG) c.aload(4).loadConstant(i).aaload();  // cr
       switch (t) {
         case Components.CM -> {
-          c.aload(2).aload(3).loadConstant(i).iload(6);
-          c.invokestatic(CD_OPS, "predictCm", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I));
+          c.aload(2).aload(3).loadConstant(i).iload(6).loadConstant(mask(1L << q[1]));
+          c.invokestatic(CD_OPS, "predictCm", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I));
         }
         case Components.ICM -> {
-          c.aload(2).aload(3).loadConstant(i).iload(5).iload(6);
-          c.invokestatic(CD_OPS, "predictIcm", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I));
+          c.aload(2).aload(3).loadConstant(i).iload(5).iload(6).loadConstant(q[1] + 2);
+          c.invokestatic(CD_OPS, "predictIcm", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I, I));
         }
         case Components.MATCH -> {
-          c.aload(2).loadConstant(i);
-          c.invokestatic(CD_OPS, "predictMatch", mt(V, CD_COMP, CD_INTS, I));
+          c.aload(2).loadConstant(i).loadConstant(mask(1L << q[2]));
+          c.invokestatic(CD_OPS, "predictMatch", mt(V, CD_COMP, CD_INTS, I, I));
         }
         case Components.AVG -> {
-          c.aload(2).loadConstant(i);
-          c.invokestatic(CD_OPS, "predictAvg", mt(V, CD_COMP, CD_INTS, I));
+          c.aload(2).loadConstant(i).loadConstant(q[1]).loadConstant(q[2]).loadConstant(q[3]);
+          c.invokestatic(CD_OPS, "predictAvg", mt(V, CD_INTS, I, I, I, I));
         }
         case Components.MIX2 -> {
-          c.aload(2).aload(3).loadConstant(i).iload(5);
-          c.invokestatic(CD_OPS, "predictMix2", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I));
+          c.aload(2).aload(3).loadConstant(i).iload(5).loadConstant(q[2]).loadConstant(q[3])
+              .loadConstant(q[5]).loadConstant(mask(1L << q[1]));
+          c.invokestatic(CD_OPS, "predictMix2",
+              mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I, I, I, I));
         }
         case Components.MIX -> {
-          c.aload(2).aload(3).loadConstant(i).iload(5);
-          c.invokestatic(CD_OPS, "predictMix", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I));
+          c.aload(2).aload(3).loadConstant(i).iload(5).loadConstant(q[3]).loadConstant(q[2])
+              .loadConstant(q[5]).loadConstant(mask(1L << q[1]));
+          c.invokestatic(CD_OPS, "predictMix",
+              mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I, I, I, I));
         }
         case Components.ISSE -> {
-          c.aload(2).aload(3).loadConstant(i).iload(5).iload(6);
-          c.invokestatic(CD_OPS, "predictIsse", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I));
+          c.aload(2).aload(3).loadConstant(i).iload(5).iload(6).loadConstant(q[2])
+              .loadConstant(q[1] + 2);
+          c.invokestatic(CD_OPS, "predictIsse",
+              mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I, I, I));
         }
         case Components.SSE -> {
-          c.aload(2).aload(3).loadConstant(i).iload(5);
-          c.invokestatic(CD_OPS, "predictSse", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I));
+          c.aload(2).aload(3).loadConstant(i).iload(5).loadConstant(q[2])
+              .loadConstant(mask(32L << q[1]));
+          c.invokestatic(CD_OPS, "predictSse", mt(V, CD_COMP, CD_INTS, CD_INTS, I, I, I, I));
         }
         default -> throw new IllegalStateException();
       }
@@ -150,43 +164,47 @@ final class PredictorJit {
   }
 
   // update(Predictor pr, int y): slots 2 y, 3 p, 4 h, 5 comp, 6 hmap4
-  private static void emitUpdate(CodeBuilder c, int[] types) {
+  private static void emitUpdate(CodeBuilder c, int[] types, int[][] par) {
     field(c, "p", CD_INTS); c.astore(3);
     field(c, "h", CD_INTS); c.astore(4);
     field(c, "comp", CD_COMPS); c.astore(5);
     field(c, "hmap4", I); c.istore(6);
     for (int i = 0; i < types.length; i++) {
       final int t = types[i];
+      final int[] q = par[i];
       if (t == Components.CONS || t == Components.AVG) continue;
       c.aload(5).loadConstant(i).aaload();  // cr
       switch (t) {
         case Components.CM -> {
-          c.iload(2);
-          c.invokestatic(CD_OPS, "updateCm", mt(V, CD_COMP, I));
+          c.iload(2).loadConstant(mask(1L << q[1])).loadConstant(q[2] * 4);
+          c.invokestatic(CD_OPS, "updateCm", mt(V, CD_COMP, I, I, I));
         }
         case Components.ICM -> {
           c.iload(2).iload(6);
           c.invokestatic(CD_OPS, "updateIcm", mt(V, CD_COMP, I, I));
         }
         case Components.MATCH -> {
-          c.aload(4).loadConstant(i).iload(2);
-          c.invokestatic(CD_OPS, "updateMatch", mt(V, CD_COMP, CD_INTS, I, I));
+          c.aload(4).loadConstant(i).iload(2).loadConstant(mask(1L << q[2]))
+              .loadConstant(mask(1L << q[1]));
+          c.invokestatic(CD_OPS, "updateMatch", mt(V, CD_COMP, CD_INTS, I, I, I, I));
         }
         case Components.MIX2 -> {
-          c.aload(3).loadConstant(i).iload(2);
-          c.invokestatic(CD_OPS, "updateMix2", mt(V, CD_COMP, CD_INTS, I, I));
+          c.aload(3).loadConstant(i).iload(2).loadConstant(q[2]).loadConstant(q[3])
+              .loadConstant(q[4]);
+          c.invokestatic(CD_OPS, "updateMix2", mt(V, CD_COMP, CD_INTS, I, I, I, I, I));
         }
         case Components.MIX -> {
-          c.aload(3).loadConstant(i).iload(2);
-          c.invokestatic(CD_OPS, "updateMix", mt(V, CD_COMP, CD_INTS, I, I));
+          c.aload(3).loadConstant(i).iload(2).loadConstant(q[3]).loadConstant(q[2])
+              .loadConstant(q[4]);
+          c.invokestatic(CD_OPS, "updateMix", mt(V, CD_COMP, CD_INTS, I, I, I, I, I));
         }
         case Components.ISSE -> {
-          c.aload(3).loadConstant(i).iload(2).iload(6);
-          c.invokestatic(CD_OPS, "updateIsse", mt(V, CD_COMP, CD_INTS, I, I, I));
+          c.aload(3).loadConstant(i).iload(2).iload(6).loadConstant(q[2]);
+          c.invokestatic(CD_OPS, "updateIsse", mt(V, CD_COMP, CD_INTS, I, I, I, I));
         }
         case Components.SSE -> {
-          c.iload(2);
-          c.invokestatic(CD_OPS, "updateSse", mt(V, CD_COMP, I));
+          c.iload(2).loadConstant(mask(32L << q[1])).loadConstant(q[4] * 4);
+          c.invokestatic(CD_OPS, "updateSse", mt(V, CD_COMP, I, I, I));
         }
         default -> throw new IllegalStateException();
       }

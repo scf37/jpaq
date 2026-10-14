@@ -187,14 +187,17 @@ final class Predictor {
       final Component cr = comp[i];
       switch (cr.type) {
         case Components.CONS -> { }
-        case Components.CM -> PredOps.predictCm(cr, p, h, i, hmap4);
-        case Components.ICM -> PredOps.predictIcm(cr, p, h, i, c8, hmap4);
-        case Components.MATCH -> PredOps.predictMatch(cr, p, i);
-        case Components.AVG -> PredOps.predictAvg(cr, p, i);
-        case Components.MIX2 -> PredOps.predictMix2(cr, p, h, i, c8);
-        case Components.MIX -> PredOps.predictMix(cr, p, h, i, c8);
-        case Components.ISSE -> PredOps.predictIsse(cr, p, h, i, c8, hmap4);
-        case Components.SSE -> PredOps.predictSse(cr, p, h, i, c8);
+        case Components.CM -> PredOps.predictCm(cr, p, h, i, hmap4, cr.cm.length - 1);
+        case Components.ICM -> PredOps.predictIcm(cr, p, h, i, c8, hmap4, cr.c1 + 2);
+        case Components.MATCH -> PredOps.predictMatch(cr, p, i, cr.ht.length - 1);
+        case Components.AVG -> PredOps.predictAvg(p, i, cr.c1, cr.c2, cr.c3);
+        case Components.MIX2 ->
+            PredOps.predictMix2(cr, p, h, i, c8, cr.c2, cr.c3, cr.c5, cr.c - 1);
+        case Components.MIX ->
+            PredOps.predictMix(cr, p, h, i, c8, cr.c3, cr.c2, cr.c5, cr.c - 1);
+        case Components.ISSE ->
+            PredOps.predictIsse(cr, p, h, i, c8, hmap4, cr.c2, cr.c1 + 2);
+        case Components.SSE -> PredOps.predictSse(cr, p, h, i, c8, cr.c2, cr.cm.length - 1);
         default -> throw ZpaqException.error("component predict not implemented");
       }
     }
@@ -215,13 +218,14 @@ final class Predictor {
       final Component cr = comp[i];
       switch (cr.type) {
         case Components.CONS, Components.AVG -> { }
-        case Components.CM -> PredOps.updateCm(cr, y);
+        case Components.CM -> PredOps.updateCm(cr, y, cr.cm.length - 1, cr.limit);
         case Components.ICM -> PredOps.updateIcm(cr, y, hmap4);
-        case Components.MATCH -> PredOps.updateMatch(cr, h, i, y);
-        case Components.MIX2 -> PredOps.updateMix2(cr, p, i, y);
-        case Components.MIX -> PredOps.updateMix(cr, p, i, y);
-        case Components.ISSE -> PredOps.updateIsse(cr, p, i, y, hmap4);
-        case Components.SSE -> PredOps.updateSse(cr, y);
+        case Components.MATCH ->
+            PredOps.updateMatch(cr, h, i, y, cr.ht.length - 1, cr.cm.length - 1);
+        case Components.MIX2 -> PredOps.updateMix2(cr, p, i, y, cr.c2, cr.c3, cr.c4);
+        case Components.MIX -> PredOps.updateMix(cr, p, i, y, cr.c3, cr.c2, cr.c4);
+        case Components.ISSE -> PredOps.updateIsse(cr, p, i, y, hmap4, cr.c2);
+        case Components.SSE -> PredOps.updateSse(cr, y, cr.cm.length - 1, cr.limit);
         default -> throw new AssertionError();
       }
     }
