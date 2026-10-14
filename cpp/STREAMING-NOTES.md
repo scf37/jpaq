@@ -1,5 +1,8 @@
 # zpaq streaming investigation (notes for future work)
 
+> Implemented in the Java port as the sequential (`.jpaq`) format with a pluggable `Storage`:
+> see [docs/SEQUENTIAL.md](../docs/SEQUENTIAL.md). These notes describe the C++ sources.
+
 Goal: modify zpaq (7.15, `zpaq.cpp` + `libzpaq.cpp`) so archives can be
 written/read with **sequential-only I/O and bounded buffers**, while keeping
 the on-disk archive format intact (old zpaq must still read new archives,
