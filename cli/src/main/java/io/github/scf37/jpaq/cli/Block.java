@@ -1,8 +1,5 @@
 package io.github.scf37.jpaq.cli;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /** A data block to extract. */
 final class Block {
   enum State { READY, WORKING, GOOD, BAD }
@@ -10,7 +7,7 @@ final class Block {
   long offset;       // location in archive
   long usize = -1;   // uncompressed size, -1 if unknown (streaming)
   long bsize;        // compressed size
-  final List<DT> files = new ArrayList<>();  // list of files pointing here
+  final IntList files = new IntList();  // ids in dt of the files pointing here
   int start;         // index in ht of first fragment
   int size;          // number of fragments to decompress
   int frags;         // number of fragments in block

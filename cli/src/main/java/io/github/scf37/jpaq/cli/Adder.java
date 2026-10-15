@@ -67,8 +67,8 @@ final class Adder {
 
   /** Sort by sortkey, then by full path. */
   private static final Comparator<DT> COMPARE_FILENAME = (a, b) -> {
-    if (a.data != b.data) return Long.compare(a.data, b.data);
-    return a.name.compareTo(b.name);
+    if (a.data() != b.data()) return Long.compare(a.data(), b.data());
+    return a.compareName(b);
   };
 
   /** Adds or deletes files from the archive. Returns 1 if error else 0. */
@@ -211,32 +211,33 @@ final class Adder {
     long totalSize = 0;  // size of all input
     long totalDone = 0;  // input deduped so far
     for (DT p : j.edt.values()) {
-      DT a = j.dt.get(j.rename(p.name));
-      if (a != null) a.data = 1;  // keep
-      if (p.date != 0 && !p.name.isEmpty() && p.name.charAt(p.name.length() - 1) != '/'
-          && (j.force || a == null || p.date != a.date || p.size != a.size)) {
-        totalSize += p.size;
+      final String pname = p.name();
+      DT a = j.dt.get(j.rename(pname));
+      if (a != null) a.data(1);  // keep
+      if (p.date() != 0 && !pname.isEmpty() && pname.charAt(pname.length() - 1) != '/'
+          && (j.force || a == null || p.date() != a.date() || p.size() != a.size())) {
+        totalSize += p.size();
 
         // Key by first 5 bytes of filename extension, case insensitive
         int sp = 0;  // sortkey byte position
-        for (int qi = 0; qi < p.name.length(); ++qi) {
-          long c = p.name.charAt(qi) & 255;
+        for (int qi = 0; qi < pname.length(); ++qi) {
+          long c = pname.charAt(qi) & 255;
           if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
           if (c == '/') {
             sp = 0;
-            p.data = 0;
+            p.data(0);
           } else if (c == '.') {
             sp = 8;
-            p.data = 0;
+            p.data(0);
           } else if (sp > 3) {
-            p.data += c << (--sp * 8);
+            p.data(p.data() + (c << (--sp * 8)));
           }
         }
 
         // Key by descending size rounded to 16K
-        long s = p.size >> 14;
+        long s = p.size() >> 14;
         if (s >= (1 << 24)) s = (1 << 24) - 1;
-        p.data += (1 << 24) - s - 1;
+        p.data(p.data() + ((1 << 24) - s - 1));
         vf.add(p);
       }
     }
@@ -267,14 +268,14 @@ final class Adder {
       for (DT p : vf) {
         Jidac.printProgress(totalSize, totalDone, j.summary);
         if (j.summary <= 0) {
-          Console.emit(new InfoLine.FileAdded(p.name, p.name, false, p.size, -1,
-              String.format(java.util.Locale.ROOT, "+ %s %1.0f\n", p.name, p.size + 0.0)));
+          Console.emit(new InfoLine.FileAdded(p.name(), p.name(), false, p.size(), -1,
+              String.format(java.util.Locale.ROOT, "+ %s %1.0f\n", p.name(), p.size() + 0.0)));
         }
         Exception[] err = new Exception[1];
-        ArchiveFile in = ArchiveFile.openRead(p.name, err);
+        ArchiveFile in = ArchiveFile.openRead(p.name(), err);
         if (in == null) {
-          Fs.printerr(p.name, err[0]);
-          totalSize -= p.size;
+          Fs.printerr(p.name(), err[0]);
+          totalSize -= p.size();
           ++errors[0];
           continue;
         }
@@ -289,12 +290,12 @@ final class Adder {
             String filename = "";
             String comment = "";
             if (i == sb.size()) {  // first block?
-              filename = j.rename(p.name);
-              comment = Strs.itos(p.date);
-              if ((p.attr & 255) > 0) {
+              filename = j.rename(p.name());
+              comment = Strs.itos(p.date());
+              if ((p.attr() & 255) > 0) {
                 comment += " ";
-                comment += (char) (p.attr & 255);
-                comment += Strs.itos(p.attr >> 8);
+                comment += (char) (p.attr() & 255);
+                comment += Strs.itos(p.attr() >> 8);
               }
             }
             totalDone += sb.size();
@@ -357,15 +358,15 @@ final class Adder {
         // Open input file
         sc.newFile();
         Exception[] err = new Exception[1];
-        in = ArchiveFile.openRead(p.name, err);
+        in = ArchiveFile.openRead(p.name(), err);
         if (in == null) {  // skip if not found
-          p.date = 0;
-          totalSize -= p.size;
-          Fs.printerr(p.name, err[0]);
+          p.date(0);
+          totalSize -= p.size();
+          Fs.printerr(p.name(), err[0]);
           ++errors[0];
           continue;
         }
-        p.data = 1;  // add
+        p.data(1);  // add
       }
 
       // Read fragments
@@ -408,7 +409,7 @@ final class Adder {
           // file.
           boolean newblock = false;
           if (frags > 0 && fj == 0 && fi < vf.size()) {
-            final long esize = vf.get(fi).size;
+            final long esize = vf.get(fi).size();
             final long newsize = sb.size() + esize + (esize >> 14) + 4096 + frags * 4L;
             if (newsize > blocksize / 4 && redundancy < sb.size() / 128) newblock = true;
             if (newblock) {  // test for mutual information
@@ -479,15 +480,15 @@ final class Adder {
         dedupesize += fsize;
         Jidac.printProgress(totalSize, totalDone, j.summary);
         if (j.summary <= 0) {
-          String newname = j.rename(p.name);
+          String newname = j.rename(p.name());
           DT a = j.dt.get(newname);
-          final boolean upd = a != null && a.date != 0;
-          StringBuilder t = new StringBuilder(upd ? "# " : "+ ").append(p.name);
-          if (!newname.equals(p.name)) t.append(" -> ").append(newname);
-          t.append(String.format(java.util.Locale.ROOT, " %1.0f", p.size + 0.0));
-          if (fsize != p.size) t.append(String.format(java.util.Locale.ROOT, " -> %1.0f", fsize + 0.0));
+          final boolean upd = a != null && a.date() != 0;
+          StringBuilder t = new StringBuilder(upd ? "# " : "+ ").append(p.name());
+          if (!newname.equals(p.name())) t.append(" -> ").append(newname);
+          t.append(String.format(java.util.Locale.ROOT, " %1.0f", p.size() + 0.0));
+          if (fsize != p.size()) t.append(String.format(java.util.Locale.ROOT, " -> %1.0f", fsize + 0.0));
           t.append("\n");
-          Console.emit(new InfoLine.FileAdded(p.name, newname, upd, p.size, fsize, t.toString()));
+          Console.emit(new InfoLine.FileAdded(p.name(), newname, upd, p.size(), fsize, t.toString()));
         }
         in.close();
       }
@@ -532,13 +533,13 @@ final class Adder {
     int dtcount = 0;  // index block header name
     int removed = 0;  // count
     for (DT p : j.dt.values()) {
-      if (p.date != 0 && p.data == 0) {
+      if (p.date() != 0 && p.data() == 0) {
         Jidac.puti(is, 0, 8);
-        byte[] nb = Strs.getBytes(p.name);
+        byte[] nb = Strs.getBytes(p.name());
         is.write(nb, 0, nb.length);
         is.put(0);
         if (j.summary <= 0) {
-          Console.emit(new InfoLine.FileRemoved(p.name, "- " + p.name + "\n"));
+          Console.emit(new InfoLine.FileRemoved(p.name(), "- " + p.name() + "\n"));
         }
         ++removed;
         if (is.size() > 16000) {
@@ -554,34 +555,34 @@ final class Adder {
     for (java.util.Iterator<DT> it = j.edt.values().iterator(); ; ) {
       DT p = it.hasNext() ? it.next() : null;
       if (p != null) {
-        String filename = j.rename(p.name);
+        String filename = j.rename(p.name());
         DT a = j.dt.get(filename);
-        if (p.date != 0 && (a == null  // new file
-            || a.date != p.date  // date change
-            || (a.attr != 0 && a.attr != p.attr)  // attr ch.
-            || a.size != p.size  // size change
-            || (p.data != 0 && !a.samePtr(p)))) {  // content
-          if (j.summary <= 0 && p.data == 0) {  // not compressed?
-            final boolean upd = a != null && a.date != 0;
-            Console.emit(new InfoLine.FileAdded(p.name, filename, upd, -1, -1,
-                (upd ? "# " : "+ ") + p.name
-                    + (filename.equals(p.name) ? "" : " -> " + filename) + "\n"));
+        if (p.date() != 0 && (a == null  // new file
+            || a.date() != p.date()  // date change
+            || (a.attr() != 0 && a.attr() != p.attr())  // attr ch.
+            || a.size() != p.size()  // size change
+            || (p.data() != 0 && !a.samePtr(p)))) {  // content
+          if (j.summary <= 0 && p.data() == 0) {  // not compressed?
+            final boolean upd = a != null && a.date() != 0;
+            Console.emit(new InfoLine.FileAdded(p.name(), filename, upd, -1, -1,
+                (upd ? "# " : "+ ") + p.name()
+                    + (filename.equals(p.name()) ? "" : " -> " + filename) + "\n"));
           }
           ++added;
-          Jidac.puti(is, p.date, 8);
+          Jidac.puti(is, p.date(), 8);
           byte[] nb = Strs.getBytes(filename);
           is.write(nb, 0, nb.length);
           is.put(0);
-          if ((p.attr & 255) == 'u') {  // unix attributes
+          if ((p.attr() & 255) == 'u') {  // unix attributes
             Jidac.puti(is, 3, 4);
-            Jidac.puti(is, p.attr, 3);
-          } else if ((p.attr & 255) == 'w') {  // windows attributes
+            Jidac.puti(is, p.attr(), 3);
+          } else if ((p.attr() & 255) == 'w') {  // windows attributes
             Jidac.puti(is, 5, 4);
-            Jidac.puti(is, p.attr, 5);
+            Jidac.puti(is, p.attr(), 5);
           } else {
             Jidac.puti(is, 0, 4);  // no attributes
           }
-          if (a == null || p.data != 0) a = p;  // use new frag pointers
+          if (a == null || p.data() != 0) a = p;  // use new frag pointers
           Jidac.puti(is, a.ptrSize(), 4);  // list of frag pointers
           for (int i = 0; i < a.ptrSize(); ++i) Jidac.puti(is, a.ptr(i), 4);
         }
