@@ -15,11 +15,11 @@ final class Lister {
 
   /** Sorts files by decreasing size, then fragment ID list. */
   private static final Comparator<DT> COMPARE_FRAGMENT_LIST = (p, q) -> {
-    if (p.size != q.size) return p.size > q.size ? -1 : 1;
+    if (p.size() != q.size()) return p.size() > q.size() ? -1 : 1;
     int c = p.comparePtr(q);
     if (c != 0) return c;
-    if (p.data != q.data) return Long.compare(p.data, q.data);
-    return p.name.compareTo(q.name);
+    if (p.data() != q.data()) return Long.compare(p.data(), q.data());
+    return p.compareName(q);
   };
 
   /** Lists the contents. */
@@ -38,17 +38,20 @@ final class Lister {
     Console.print("\n");
 
     // Compute directory sizes as the sum of their contents
-    @SuppressWarnings("unchecked")
-    java.util.TreeMap<String, DT>[] dp = new java.util.TreeMap[] {j.dt, j.edt};
+    FileTable[] dp = {j.dt, j.edt};
     for (int i = 0; i < 2; ++i) {
       for (DT p : dp[i].values()) {
-        int len = p.name.length();
+        final String pname = p.name();
+        int len = pname.length();
         // The C++ tests p->first[len] != '/', i.e. the terminating NUL, which is always true.
         if (len > 0) {
+          int raw = 0;  // String.hashCode() of the first k + 1 chars
           for (int k = 0; k < len; ++k) {
-            if (p.name.charAt(k) == '/') {
-              DT q = dp[i].get(p.name.substring(0, k + 1));
-              if (q != null) q.size += p.size;
+            final char c = pname.charAt(k);
+            raw = 31 * raw + c;
+            if (c == '/') {
+              DT q = dp[i].getPrefix(pname, k + 1, raw);
+              if (q != null) q.size(q.size() + (p.size()));
             }
           }
         }
@@ -59,17 +62,17 @@ final class Lister {
     // if any. Then list any unmatched internal files at the end.
     List<DT> filelist = new ArrayList<>();
     for (DT p : j.edt.values()) {
-      DT a = j.dt.get(j.rename(p.name));
-      if (a != null && (j.all != 0 || a.date != 0)) {
-        a.data = '-';
+      DT a = j.dt.get(j.rename(p.name()));
+      if (a != null && (j.all != 0 || a.date() != 0)) {
+        a.data('-');
         filelist.add(a);
       }
-      p.data = '+';
+      p.data('+');
       filelist.add(p);
     }
     for (DT a : j.dt.values()) {
-      if (a.data != '-' && (j.all != 0 || a.date != 0)) {
-        a.data = '-';
+      if (a.data() != '-' && (j.all != 0 || a.date() != 0)) {
+        a.data('-');
         filelist.add(a);
       }
     }
@@ -87,41 +90,42 @@ final class Lister {
     Extractor eq = new Extractor(j);
     for (int fi = 0; fi < filelist.size() && (j.summary <= 0 || fi < j.summary); ++fi) {
       DT p = filelist.get(fi);
+      String pname = p.name();
 
       // Compare external files
-      if (j.summary <= 0 && p.data == '-' && fi + 1 < filelist.size()
-          && filelist.get(fi + 1).data == '+') {
+      if (j.summary <= 0 && p.data() == '-' && fi + 1 < filelist.size()
+          && filelist.get(fi + 1).data() == '+') {
         DT p1 = filelist.get(fi + 1);
-        if ((j.force && eq.equal(p, p1.name))
-            || (!j.force && p.date == p1.date && p.size == p1.size
-                && (p.attr == 0 || p1.attr == 0 || p.attr == p1.attr))) {
-          p.data = '=';
+        if ((j.force && eq.equal(p, p1.name()))
+            || (!j.force && p.date() == p1.date() && p.size() == p1.size()
+                && (p.attr() == 0 || p1.attr() == 0 || p.attr() == p1.attr()))) {
+          p.data('=');
           ++fi;
         } else {
-          p.data = '#';
+          p.data('#');
         }
       }
 
       // Compare with previous file in summary
-      if (j.summary > 0 && fi > 0 && p.date != 0 && !p.name.isEmpty()
-          && p.name.charAt(p.name.length() - 1) != '/' && p.ptrSize() > 0
+      if (j.summary > 0 && fi > 0 && p.date() != 0 && !pname.isEmpty()
+          && pname.charAt(pname.length() - 1) != '/' && p.ptrSize() > 0
           && filelist.get(fi - 1).samePtr(p))
-        p.data = '^';
+        p.data('^');
 
-      if (p.data == '=') ++matches;
-      if (p.data == '#') ++mismatches;
-      if (p.data == '-') ++internal;
-      if (p.data == '+') ++external;
-      if (p.data == '^') ++duplicates;
+      if (p.data() == '=') ++matches;
+      if (p.data() == '#') ++mismatches;
+      if (p.data() == '-') ++internal;
+      if (p.data() == '+') ++external;
+      if (p.data() == '^') ++duplicates;
 
       // List selected comparison results
-      if (j.nottype.indexOf((char) p.data) < 0 && p.data != 0) {
-        if (!p.name.isEmpty() && p.name.charAt(p.name.length() - 1) != '/') usize += p.size;
+      if (j.nottype.indexOf((char) p.data()) < 0 && p.data() != 0) {
+        if (!pname.isEmpty() && pname.charAt(pname.length() - 1) != '/') usize += p.size();
         StringBuilder t = new StringBuilder();
-        t.append(String.format(java.util.Locale.ROOT, "%c %s %12.0f ", (char) p.data,
-            Dates.dateToString(p.date), p.size + 0.0));
-        if (!j.noattributes) t.append(Dates.attrToString(p.attr)).append(' ');
-        t.append(p.name);
+        t.append(String.format(java.util.Locale.ROOT, "%c %s %12.0f ", (char) p.data(),
+            Dates.dateToString(p.date()), p.size() + 0.0));
+        if (!j.noattributes) t.append(Dates.attrToString(p.attr())).append(' ');
+        t.append(pname);
         StringBuilder fr = new StringBuilder();
         if (j.summary < 0) {  // frag pointers
           boolean hyphen = false;
@@ -140,7 +144,7 @@ final class Lister {
         }
         t.append(fr);
         int v;  // list version updates, deletes, compressed size
-        if (j.all > 0 && p.name.length() == j.all + 1 && (v = Strs.atoi(p.name)) > 0
+        if (j.all > 0 && pname.length() == j.all + 1 && (v = Strs.atoi(pname)) > 0
             && v < j.ver.size()) {  // version info
           Ver vr = j.ver.get(v);
           t.append(String.format(java.util.Locale.ROOT, " +%d -%d -> %1.0f", vr.updates, vr.deletes,
@@ -150,7 +154,7 @@ final class Lister {
                 v + 1 < j.ver.size() ? j.ver.get(v + 1).firstFragment - 1 : j.ht.size() - 1));
         }
         t.append('\n');
-        Console.emit(new InfoLine.ListEntry((char) p.data, p.date, p.size, p.attr, p.name,
+        Console.emit(new InfoLine.ListEntry((char) p.data(), p.date(), p.size(), p.attr(), pname,
             fr.toString(), t.toString()));
       }
     }  // end for i = each file version
@@ -164,7 +168,7 @@ final class Lister {
     int refs = 0;
     boolean[] ref = new boolean[j.ht.size()];
     for (DT p : j.dt.values()) {
-      if (p.date != 0) {
+      if (p.date() != 0) {
         ++nfiles;
         for (int k = 0; k < p.ptrSize(); ++k) {
           int m = p.ptr(k);

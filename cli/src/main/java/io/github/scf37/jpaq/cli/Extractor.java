@@ -108,16 +108,16 @@ final class Extractor {
     }
 
     // internal or neither file exists
-    if (p.date == 0) return !Fs.exists(filename);
+    if (p.date() == 0) return !Fs.exists(filename);
 
     // directories always match
-    if (!p.name.isEmpty() && p.name.charAt(p.name.length() - 1) == '/') return Fs.exists(filename);
+    if (!p.name().isEmpty() && p.name().charAt(p.name().length() - 1) == '/') return Fs.exists(filename);
 
     // compare sizes
     ArchiveFile in = ArchiveFile.openRead(filename, null);
     if (in == null) return false;
     try {
-      if (in.length() != p.size) return false;
+      if (in.length() != p.size()) return false;
 
       // compare hashes
       final int bufsize = 4096;
@@ -201,20 +201,21 @@ final class Extractor {
 
     // Label files to extract with data=0. Skip existing output files. If force then skip only if
     // equal and set date and attributes.
+    j.dt.enableData();  // before the threads start: no allocation while they run
     ExtractJob job = new ExtractJob();
     int totalFiles = 0;
     int skipped = 0;
     for (DT p : j.dt.values()) {
-      p.data = -1;  // skip
-      if (p.date != 0 && !p.name.isEmpty()) {
-        final String fn = j.rename(p.name);
-        final boolean isdir = p.name.charAt(p.name.length() - 1) == '/';
+      p.data(-1);  // skip
+      if (p.date() != 0 && !p.name().isEmpty()) {
+        final String fn = j.rename(p.name());
+        final boolean isdir = p.name().charAt(p.name().length() - 1) == '/';
         if (j.repack == null && !j.dotest && j.force && !isdir && equal(p, fn)) {
           if (j.summary <= 0) {  // identical
             Console.emit(new InfoLine.FileSkipped(fn, InfoLine.FileSkipped.Reason.IDENTICAL,
                 "= " + fn + "\n"));
           }
-          Fs.setDateAttr(fn, p.date, p.attr);
+          Fs.setDateAttr(fn, p.date(), p.attr());
           ++skipped;
         } else if (j.repack == null && !j.dotest && !j.force && Fs.exists(fn)) {  // exists, skip
           if (j.summary <= 0) {
@@ -223,17 +224,17 @@ final class Extractor {
           }
           ++skipped;
         } else if (isdir) {  // update directories later
-          p.data = 0;
+          p.data(0);
         } else if (block.size() > 0) {  // files to decompress
-          p.data = 0;
+          p.data(0);
           int lo = 0;
           int hi = block.size() - 1;  // block indexes for binary search
-          for (int i = 0; p.data >= 0 && i < p.ptrSize(); ++i) {
+          for (int i = 0; p.data() >= 0 && i < p.ptrSize(); ++i) {
             final int jj = p.ptr(i);  // fragment index
             if (jj == 0 || Integer.compareUnsigned(jj, j.ht.size()) >= 0 || j.ht.usize(jj) < -1) {
-              Console.emit(new ErrorLine.BadFragments(p.name,
-                  p.name + ": bad frag IDs, skipping...\n"));
-              p.data = -1;  // skip
+              Console.emit(new ErrorLine.BadFragments(p.name(),
+                  p.name() + ": bad frag IDs, skipping...\n"));
+              p.data(-1);  // skip
               continue;
             }
             if (lo != hi || lo >= block.size() || Integer.compareUnsigned(jj, block.get(lo).start) < 0
@@ -250,10 +251,10 @@ final class Extractor {
             int c = jj - block.get(lo).start + 1;
             Block bl = block.get(lo);
             if (bl.size < c) bl.size = c;
-            if (bl.files.size() == 0 || bl.files.get(bl.files.size() - 1) != p) bl.files.add(p);
+            if (bl.files.size() == 0 || bl.files.get(bl.files.size() - 1) != p.id) bl.files.add(p.id);
           }
           ++totalFiles;
-          job.totalSize += p.size;
+          job.totalSize += p.size();
         }
       }  // end if selected
     }  // end for
@@ -312,15 +313,15 @@ final class Extractor {
               if (filename.length() > 0 || segments == 0) {
                 int k;
                 for (k = 0; k < b.files.size(); ++k) {  // find in dt
-                  DT f = b.files.get(k);
-                  if (f.ptrSize() > 0 && f.ptr(0) == b.start + jj && f.date > 0 && f.data == 0)
+                  DT f = j.dt.at(b.files.get(k));
+                  if (f.ptrSize() > 0 && f.ptr(0) == b.start + jj && f.date() > 0 && f.data() == 0)
                     break;
                 }
                 if (k < b.files.size()) {  // found new file
                   if (outf != null) outf.close();
                   outf = null;
-                  String outname = j.rename(b.files.get(k).name);
-                  dtptr = b.files.get(k);
+                  dtptr = j.dt.at(b.files.get(k));
+                  String outname = j.rename(dtptr.name());
                   job.mutex.lock();
                   try {
                     if (j.summary <= 0) {
@@ -359,7 +360,7 @@ final class Extractor {
                 throw ZpaqException.error("unknown checksum type");
               }
               ++b.extracted;
-              if (dtptr != null) ++dtptr.data;
+              if (dtptr != null) dtptr.data(dtptr.data() + 1);
               filename.setLength(0);
               ++segments;
             }
@@ -383,12 +384,12 @@ final class Extractor {
 
     // Create empty directories and set file dates and attributes
     if (!j.dotest) {
-      for (DT p : j.dt.descendingMap().values()) {
-        if (p.data >= 0 && p.date != 0 && !p.name.isEmpty()) {
-          String s = j.rename(p.name);
-          if (p.name.charAt(p.name.length() - 1) == '/') Fs.makepath(s, p.date, p.attr);
-          else if ((p.attr & 0x1ff) == 'w' + 256)  // read-only?
-            Fs.setDateAttr(s, 0, p.attr);
+      for (DT p : j.dt.descendingValues()) {
+        if (p.data() >= 0 && p.date() != 0 && !p.name().isEmpty()) {
+          String s = j.rename(p.name());
+          if (p.name().charAt(p.name().length() - 1) == '/') Fs.makepath(s, p.date(), p.attr());
+          else if ((p.attr() & 0x1ff) == 'w' + 256)  // read-only?
+            Fs.setDateAttr(s, 0, p.attr());
         }
       }
     }
@@ -397,14 +398,14 @@ final class Extractor {
     int extracted = 0;
     int errors = 0;
     for (DT p : j.dt.values()) {
-      String fn = j.rename(p.name);
-      if (p.data >= 0 && p.date != 0 && !fn.isEmpty() && fn.charAt(fn.length() - 1) != '/') {
+      String fn = j.rename(p.name());
+      if (p.data() >= 0 && p.date() != 0 && !fn.isEmpty() && fn.charAt(fn.length() - 1) != '/') {
         ++extracted;
-        if (p.ptrSize() != (int) p.data) {
+        if (p.ptrSize() != (int) p.data()) {
           if (++errors == 1)
             Console.eprint("\nFailed (extracted/total fragments, file):\n");
-          Console.emit(new ErrorLine.ExtractFailed(fn, (int) p.data, p.ptrSize(),
-              (int) p.data + "/" + p.ptrSize() + " " + fn + "\n"));
+          Console.emit(new ErrorLine.ExtractFailed(fn, (int) p.data(), p.ptrSize(),
+              (int) p.data() + "/" + p.ptrSize() + " " + fn + "\n"));
         }
       }
     }
@@ -559,18 +560,18 @@ final class Extractor {
     MemoryBuffer is = new MemoryBuffer();
     for (java.util.Iterator<DT> it = j.dt.values().iterator(); ; ) {
       DT p = it.hasNext() ? it.next() : null;
-      if (p != null && p.date > 0 && p.data >= 0) {
-        String filename = j.rename(p.name);
-        Jidac.puti(is, p.date, 8);
+      if (p != null && p.date() > 0 && p.data() >= 0) {
+        String filename = j.rename(p.name());
+        Jidac.puti(is, p.date(), 8);
         byte[] nb = Strs.getBytes(filename);
         is.write(nb, 0, nb.length);
         is.put(0);
-        if ((p.attr & 255) == 'u') {  // unix attributes
+        if ((p.attr() & 255) == 'u') {  // unix attributes
           Jidac.puti(is, 3, 4);
-          Jidac.puti(is, p.attr, 3);
-        } else if ((p.attr & 255) == 'w') {  // windows attributes
+          Jidac.puti(is, p.attr(), 3);
+        } else if ((p.attr() & 255) == 'w') {  // windows attributes
           Jidac.puti(is, 5, 4);
-          Jidac.puti(is, p.attr, 5);
+          Jidac.puti(is, p.attr(), 5);
         } else {
           Jidac.puti(is, 0, 4);  // no attributes
         }
@@ -840,8 +841,8 @@ final class Extractor {
   private void writeFiles(ExtractJob job, Block b, MemoryBuffer out) {
     final byte[] od = out.data();
     for (int ip = 0; ip < b.files.size(); ++ip) {
-      DT p = b.files.get(ip);
-      if (p.date == 0 || p.data < 0 || p.data >= p.ptrSize()) continue;  // don't write
+      DT p = j.dt.at(b.files.get(ip));
+      if (p.date() == 0 || p.data() < 0 || p.data() >= p.ptrSize()) continue;  // don't write
 
       // Look for pointers to this block
       long offset = 0;  // write offset
@@ -864,8 +865,8 @@ final class Extractor {
 
         // Open file for output
         if (job.lastdt == null) {
-          String filename = j.rename(p.name);
-          if (p.data == 0) {
+          String filename = j.rename(p.name());
+          if (p.data() == 0) {
             if (!j.dotest) Fs.makepath(filename);
             if (j.summary <= 0) {
               job.mutex.lock();
@@ -905,13 +906,13 @@ final class Extractor {
         }
 
         // Combine consecutive fragments into a single write
-        ++p.data;
+        p.data(p.data() + 1);
         long usize = j.ht.usize(ptrj);
         while (jj + 1 < p.ptrSize() && p.ptr(jj + 1) == p.ptr(jj) + 1
             && Integer.compareUnsigned(p.ptr(jj + 1), b.start + b.size) < 0
             && j.ht.usize(p.ptr(jj + 1)) >= 0
             && usize + j.ht.usize(p.ptr(jj + 1)) <= 0x7fffffffL) {
-          ++p.data;
+          p.data(p.data() + 1);
           usize += j.ht.usize(p.ptr(++jj));
         }
 
@@ -933,12 +934,12 @@ final class Extractor {
 
         // Close file. If this is the last fragment then set date and attr. Do not set read-only
         // attribute in Windows yet.
-        if (p.data == p.ptrSize()) {
+        if (p.data() == p.ptrSize()) {
           if (!j.dotest) {
-            String fn = j.rename(p.name);
-            long attr = p.attr;
-            long date = p.date;
-            if ((p.attr & 0x1ff) == 'w' + 256) attr = 0;  // read-only?
+            String fn = j.rename(p.name());
+            long attr = p.attr();
+            long date = p.date();
+            if ((p.attr() & 0x1ff) == 'w' + 256) attr = 0;  // read-only?
             closeFile(fn, date, attr, job.outf);
             job.outf = null;
           }
