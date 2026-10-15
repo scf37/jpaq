@@ -371,28 +371,31 @@ final class FileTable {
     }
   }
 
-  /** Drops the unused space in the pool if it is more than a quarter of it. */
+  /** Drops the unused space in the pointer pool (lists that were replaced, growth reserve). */
   void compact() {
-    if (garbage * 4L <= poolEnd) return;
-    long live = 1;
-    for (int e = 0; e < size; e++) {
-      int r = ptrRef[e >>> PAGE_SHIFT][e & PAGE_MASK];
-      if (r != 0) live += pool[r] + 1L;
+    if (garbage * 4L > poolEnd) {
+      long live = 1;
+      for (int e = 0; e < size; e++) {
+        int r = ptrRef[e >>> PAGE_SHIFT][e & PAGE_MASK];
+        if (r != 0) live += pool[r] + 1L;
+      }
+      int[] np = new int[(int) live];
+      int end = 1;
+      for (int e = 0; e < size; e++) {
+        int[] p = ptrRef[e >>> PAGE_SHIFT];
+        int r = p[e & PAGE_MASK];
+        if (r == 0) continue;
+        int len = pool[r];
+        System.arraycopy(pool, r, np, end, len + 1);
+        p[e & PAGE_MASK] = end;
+        end += len + 1;
+      }
+      pool = np;
+      poolEnd = end;
+      garbage = 0;
+    } else if (pool.length - poolEnd > poolEnd / 16) {
+      pool = Arrays.copyOf(pool, poolEnd);
     }
-    int[] np = new int[(int) live];
-    int end = 1;
-    for (int e = 0; e < size; e++) {
-      int[] p = ptrRef[e >>> PAGE_SHIFT];
-      int r = p[e & PAGE_MASK];
-      if (r == 0) continue;
-      int len = pool[r];
-      System.arraycopy(pool, r, np, end, len + 1);
-      p[e & PAGE_MASK] = end;
-      end += len + 1;
-    }
-    pool = np;
-    poolEnd = end;
-    garbage = 0;
   }
 
   /** True if the pointer lists of a (in this table) and b (in o) are equal. */
