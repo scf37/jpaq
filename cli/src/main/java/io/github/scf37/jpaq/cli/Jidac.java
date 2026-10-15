@@ -16,7 +16,6 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.TreeMap;
 
 /**
  * A Jidac object represents an archive contents: a list of file fragments with hash, size, and
@@ -56,8 +55,8 @@ final class Jidac {
   long dhsize;                       // total size of D blocks according to H blocks
   long dcsize;                       // total size of D blocks according to C blocks
   FragTable ht = new FragTable();    // list of fragments
-  TreeMap<String, DT> dt = new TreeMap<>();    // set of files in archive
-  TreeMap<String, DT> edt = new TreeMap<>();   // set of external files to add or compare
+  FileTable dt = new FileTable();              // set of files in archive
+  FileTable edt = new FileTable();             // set of external files to add or compare
   List<Block> block = new ArrayList<>();       // list of data blocks to extract
   List<Ver> ver = new ArrayList<>();           // version info
 
@@ -642,7 +641,7 @@ final class Jidac {
                     if (all != 0) {
                       String fn = Strs.itos(ver.size() - 1, all) + "/";
                       if (renamed) fn = rename(fn);
-                      if (isselected(fn, false)) dtGet(fn).date = fdate;
+                      if (isselected(fn, false)) dtGet(fn).date(fdate);
                     }
                     if (jmp != 0) break endblock;
                   }
@@ -690,11 +689,13 @@ final class Jidac {
                   if (fdate > lv.lastdate) lv.lastdate = fdate;
                   int s = 0;
                   final int end = os.size();
+                  int[] ptrs = new int[16];  // pointer list of the file being read
                   while (s + 9 <= end) {
-                    DT dtr = new DT();
-                    dtr.date = btol(osd, s);  // date
+                    final long fdt = btol(osd, s);  // date
+                    long fattr = 0;
+                    int ni = 0;
                     s += 8;
-                    if (dtr.date != 0) ++lv.updates;
+                    if (fdt != 0) ++lv.updates;
                     else ++lv.deletes;
                     int len = 0;
                     while (s + len < end && osd[s + len] != 0) len++;
@@ -708,29 +709,33 @@ final class Jidac {
                     final boolean issel = isselected(fn, renamed);
                     s += len + 1;  // skip filename
                     if (s > end) throw ZpaqException.error("filename too long");
-                    if (dtr.date != 0) {
+                    if (fdt != 0) {
                       ++nfiles;
                       if (s + 4 > end) throw ZpaqException.error("missing attr");
                       final long na = btoi(osd, s) & 0xFFFFFFFFL;  // attr bytes
                       s += 4;
                       if (s + na > end || na > 65535) throw ZpaqException.error("attr too long");
                       for (int k = 0; k < na; ++k, ++s)  // read attr
-                        if (k < 8) dtr.attr += (long) (osd[s] & 255) << (k * 8);
-                      if (noattributes) dtr.attr = 0;
+                        if (k < 8) fattr += (long) (osd[s] & 255) << (k * 8);
+                      if (noattributes) fattr = 0;
                       if (s + 4 > end) throw ZpaqException.error("missing ptr");
-                      final long ni = btoi(osd, s) & 0xFFFFFFFFL;  // ptr list size
+                      final long nl = btoi(osd, s) & 0xFFFFFFFFL;  // ptr list size
                       s += 4;
-                      if (ni > (end - s) / 4L) throw ZpaqException.error("ptr list too long");
-                      if (issel) dtr.ptrResize((int) ni);
+                      if (nl > (end - s) / 4L) throw ZpaqException.error("ptr list too long");
+                      ni = (int) nl;
+                      if (issel && ni > ptrs.length) ptrs = new int[ni];
                       for (int k = 0; k < ni; ++k) {  // read ptr
                         final int j = btoi(osd, s);
                         s += 4;
-                        if (issel) dtr.setPtr(k, j);
+                        if (issel) ptrs[k] = j;
                       }
                     }
                     if (issel) {
-                      dtr.name = fn;
-                      dt.put(fn, dtr);
+                      DT dtr = dt.put(fn);
+                      dtr.date(fdt);
+                      dtr.attr(fattr);
+                      dtr.ptrResize(ni);
+                      for (int k = 0; k < ni; ++k) dtr.setPtr(k, ptrs[k]);
                     }
                   }  // end while more files
                 } else if (btype == 'd' && adia == Dialect.JPAQ && ver.size() > 1) {
@@ -764,8 +769,8 @@ final class Jidac {
                   DT dtr = dtGet(fn);
                   if (filename.s.length() > 0 || first) {
                     ++nfiles;
-                    dtr.date = date;
-                    dtr.attr = 0;
+                    dtr.date(date);
+                    dtr.attr(0);
                     dtr.ptrClear();
                     ++ver.get(ver.size() - 1).updates;
                   }
@@ -816,15 +821,16 @@ final class Jidac {
             ver.size() - 1, nfiles, ht.size() - 1, blockOffset / 1000000.0)));
 
     // Calculate file sizes
-    for (DT p : dt.values()) {
+    for (DT p : dt.unordered()) {
       for (int i = 0; i < p.ptrSize(); ++i) {
         final int j = p.ptr(i);
-        if (j > 0 && j < ht.size() && p.size >= 0) {
-          if (ht.usize(j) >= 0) p.size += ht.usize(j);
-          else p.size = -1;  // unknown size
+        if (j > 0 && j < ht.size() && p.size() >= 0) {
+          if (ht.usize(j) >= 0) p.size(p.size() + ht.usize(j));
+          else p.size(-1);  // unknown size
         }
       }
     }
+    dt.compact();
     in.close();
     return blockOffset;
   }
@@ -862,22 +868,12 @@ final class Jidac {
 
   /** dt[fn] of the C++ map: the existing entry or a new default one. */
   DT dtGet(String fn) {
-    DT d = dt.get(fn);
-    if (d == null) {
-      d = new DT(fn);
-      dt.put(fn, d);
-    }
-    return d;
+    return dt.getOrAdd(fn);
   }
 
   /** Same for the external file map. */
   DT edtGet(String fn) {
-    DT d = edt.get(fn);
-    if (d == null) {
-      d = new DT(fn);
-      edt.put(fn, d);
-    }
-    return d;
+    return edt.getOrAdd(fn);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -930,10 +926,10 @@ final class Jidac {
   void addfile(String filename, long edate, long esize, long eattr) {
     if (!isselected(filename, false)) return;
     DT d = edtGet(filename);
-    d.date = edate;
-    d.size = esize;
-    d.attr = noattributes ? 0 : eattr;
-    d.data = 0;
+    d.date(edate);
+    d.size(esize);
+    d.attr(noattributes ? 0 : eattr);
+    d.data(0);
   }
 
   // ---------------------------------------------------------------------------------------
