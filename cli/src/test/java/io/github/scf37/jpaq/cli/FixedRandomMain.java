@@ -10,8 +10,6 @@ public final class FixedRandomMain {
 
   public static void main(String[] args) {
     ScenarioRunner.installFixedRandom();
-    int rc = Main.run(args);
-    System.out.flush();
-    System.exit(rc);
+    System.exit(Main.runProcess(Main.byteArgs(args)));
   }
 }

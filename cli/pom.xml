@@ -10,9 +10,13 @@
   </parent>
   <artifactId>jpaq-cli</artifactId>
   <name>jpaq-cli</name>
-  <description>zpaq command line archiver on top of jpaq-libzpaq</description>
+  <description>zpaq command line archiver on top of jpaq-lib</description>
 
   <dependencies>
+    <dependency>
+      <groupId>io.github.scf37.jpaq</groupId>
+      <artifactId>jpaq-lib</artifactId>
+    </dependency>
     <dependency>
       <groupId>io.github.scf37.jpaq</groupId>
       <artifactId>jpaq-libzpaq</artifactId>

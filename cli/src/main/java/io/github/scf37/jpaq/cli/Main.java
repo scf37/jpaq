@@ -1,15 +1,22 @@
 package io.github.scf37.jpaq.cli;
 
-import io.github.scf37.jpaq.api.ErrorLine;
-import io.github.scf37.jpaq.api.Format;
-import io.github.scf37.jpaq.api.InfoLine;
-import io.github.scf37.jpaq.api.LocalFsStorage;
-import io.github.scf37.jpaq.libzpaq.ZpaqException;
+import io.github.scf37.jpaq.ErrorLine;
+import io.github.scf37.jpaq.Format;
+import io.github.scf37.jpaq.InfoLine;
+import io.github.scf37.jpaq.Line;
+import io.github.scf37.jpaq.LocalFsStorage;
+import io.github.scf37.jpaq.engine.Ctx;
+import io.github.scf37.jpaq.engine.Jidac;
+import io.github.scf37.jpaq.engine.Strs;
+import java.io.BufferedOutputStream;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.time.Instant;
 
 /** The zpaq command line archiver. */
 public final class Main {
@@ -58,86 +65,93 @@ public final class Main {
   }
 
   /**
-   * Runs the command line (without the program name) with relative file names resolved against
-   * {@code workDir}. Not safe to call concurrently from several threads. Returns the exit code.
+   * The clock of the command line: the system clock, unless the environment variable
+   * SOURCE_DATE_EPOCH (seconds since 1970) is set, which makes archives reproducible. Null means
+   * the system clock.
    */
-  public static int run(Path workDir, String[] args) {
-    Fs.setWorkingDirectory(workDir);
-    try {
-      return run(args);
-    } finally {
-      Fs.setWorkingDirectory(null);
+  static Instant sourceDateEpoch() {
+    String e = System.getenv("SOURCE_DATE_EPOCH");
+    if (e != null && !e.isBlank()) {
+      try {
+        return Instant.ofEpochSecond(Long.parseLong(e.trim()));
+      } catch (NumberFormatException ex) {
+        // fall through to the system clock
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Prints lines like the C++ program: stdout buffered, stderr after flushing stdout. Text is
+   * byte strings, written unchanged as ISO-8859-1.
+   */
+  private record ConsoleSink(PrintStream out, PrintStream err) implements Ctx.Sink {
+    @Override
+    public void emit(Line line) {
+      if (line.channel() == Line.Channel.STDOUT) {
+        out.print(line.text());
+      } else {
+        out.flush();
+        err.print(line.text());
+        err.flush();
+      }
+    }
+
+    @Override
+    public void flush() {
+      out.flush();
     }
   }
 
   /**
-   * Runs the command line (without the program name). Returns the exit code: 0 OK, 1 warnings, 2
-   * errors.
+   * Runs a command line whose arguments are byte strings (argv[0] is the program name), with
+   * relative file names resolved against {@code workDir} (null: the process directory) and the
+   * output written to {@code out} and {@code err} as bytes (ISO-8859-1 streams). Returns the exit
+   * code: 0 OK, 1 warnings, 2 errors.
    */
-  public static int run(String[] args) {
-    String[] r = new String[args.length + 1];
-    r[0] = "zpaq";
-    for (int i = 0; i < args.length; i++) r[i + 1] = Strs.toBytes(args[i]);
-    return runBytes(r);
-  }
-
-  /**
-   * Runs the command line with archive files in {@code io} and options set by {@code configure}
-   * after the arguments were parsed. Not safe to call concurrently.
-   */
-  static int run(Path workDir, ArchiveIo io, java.util.function.Consumer<Jidac> configure,
-      String[] args) {
-    Fs.setWorkingDirectory(workDir);
-    try {
-      String[] r = new String[args.length + 1];
-      r[0] = "zpaq";
-      for (int i = 0; i < args.length; i++) r[i + 1] = Strs.toBytes(args[i]);
-      return runBytes(r, io, configure);
-    } finally {
-      Fs.setWorkingDirectory(null);
-    }
-  }
-
-  private static int runBytes(String[] argv) {
-    return runBytes(argv, null, null);
-  }
-
-  /** Runs with arguments as byte strings; argv[0] is the program name. */
-  private static int runBytes(String[] argv, ArchiveIo io, java.util.function.Consumer<Jidac> cfg) {
-    Jidac.globalStart = Jidac.mtime();
+  static int run(String[] argv, Path workDir, Instant clock, PrintStream out, PrintStream err) {
+    Ctx ctx = new Ctx(new ConsoleSink(out, err), workDir, clock);
     int errorcode;
     try {
-      Jidac jidac = new Jidac(io != null ? io
-          : new ArchiveIo(new LocalFsStorage(Fs.workingDirectory()), Format.CLASSIC));
-      jidac.configure = cfg;
-      errorcode = jidac.doCommand(argv);
+      Jidac jidac = new Jidac(ctx, new LocalFsStorage(workDir), Format.CLASSIC);
+      errorcode = CommandLine.run(ctx, jidac, argv);
     } catch (ExitException e) {
-      Console.flush();
+      ctx.flush();
       return e.code;
-    } catch (ZpaqException | OutOfMemoryError | java.io.UncheckedIOException
-        | IllegalStateException e) {
-      fatal(e);
-      errorcode = 2;
-    } catch (RuntimeException e) {
-      fatal(e);
+    } catch (RuntimeException | OutOfMemoryError e) {
+      ctx.emit(new ErrorLine.Fatal(Jidac.what(e), e, "zpaq error: " + Jidac.what(e) + "\n"));
       errorcode = 2;
     }
-    Console.flush();
-    final double seconds = (Jidac.mtime() - Jidac.globalStart) / 1000.0;
-    Console.emit(new InfoLine.Finished(errorcode, seconds,
+    ctx.flush();
+    final double seconds = ctx.elapsedMillis() / 1000.0;
+    ctx.emit(new InfoLine.Finished(errorcode, seconds,
         String.format(java.util.Locale.ROOT, "%1.3f seconds %s\n", seconds,
             errorcode > 1 ? "(with errors)" : errorcode > 0 ? "(with warnings)" : "(all OK)")));
     return errorcode;
   }
 
-  private static void fatal(Throwable e) {
-    Console.emit(new ErrorLine.Fatal(Jidac.what(e), e, "zpaq error: " + Jidac.what(e) + "\n"));
+  /** Same with Java strings as arguments (without the program name). */
+  static int run(Path workDir, Instant clock, PrintStream out, PrintStream err, String... args) {
+    String[] r = new String[args.length + 1];
+    r[0] = "zpaq";
+    for (int i = 0; i < args.length; i++) r[i + 1] = Strs.toBytes(args[i]);
+    return run(r, workDir, clock, out, err);
   }
 
   public static void main(String[] args) {
-    int rc = runBytes(byteArgs(args));
-    Console.flush();
-    Console.err.flush();
-    System.exit(rc);
+    System.exit(runProcess(byteArgs(args)));
+  }
+
+  /** Runs a command line with the standard streams of the process; returns the exit code. */
+  static int runProcess(String[] argv) {
+    PrintStream out = new PrintStream(
+        new BufferedOutputStream(new FileOutputStream(FileDescriptor.out), 1 << 16), false,
+        StandardCharsets.ISO_8859_1);
+    PrintStream err = new PrintStream(
+        new FileOutputStream(FileDescriptor.err), true, StandardCharsets.ISO_8859_1);
+    int rc = run(argv, null, sourceDateEpoch(), out, err);
+    out.flush();
+    err.flush();
+    return rc;
   }
 }
