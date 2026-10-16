@@ -10,16 +10,12 @@
   </parent>
   <artifactId>jpaq-cli</artifactId>
   <name>jpaq-cli</name>
-  <description>zpaq command line archiver on top of jpaq-lib</description>
+  <description>zpaq command line archiver on top of jpaq-api</description>
 
   <dependencies>
     <dependency>
       <groupId>io.github.scf37.jpaq</groupId>
-      <artifactId>jpaq-lib</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.github.scf37.jpaq</groupId>
-      <artifactId>jpaq-libzpaq</artifactId>
+      <artifactId>jpaq-api</artifactId>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -30,6 +26,32 @@
 
   <build>
     <plugins>
+      <!-- The command line uses the archive library only (module-info). The tests also reach
+           libzpaq, for the deterministic encryption salts of the reference comparisons. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <configuration>
+              <compilerArgs>
+                <arg>--add-modules</arg>
+                <arg>io.github.scf37.jpaq.libzpaq</arg>
+                <arg>--add-reads</arg>
+                <arg>io.github.scf37.jpaq.cli=io.github.scf37.jpaq.libzpaq</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>--add-reads io.github.scf37.jpaq.cli=io.github.scf37.jpaq.libzpaq</argLine>
+        </configuration>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
