@@ -68,6 +68,12 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>3.5.2</version>
+          <configuration>
+            <environmentVariables>
+              <!-- Java can only name files that are valid in the locale's encoding -->
+              <LC_ALL>C.UTF-8</LC_ALL>
+            </environmentVariables>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

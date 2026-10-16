@@ -7,7 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /** A minimal stdio-like random access file ("rb", "wb", "rb+") with an explicit position. */
-final class ArchiveFile implements AutoCloseable {
+final class ArchiveFile implements Source, AutoCloseable {
   private final RandomAccessFile raf;
   private long pos;
 
@@ -55,7 +55,8 @@ final class ArchiveFile implements AutoCloseable {
   }
 
   /** Reads up to len bytes at the current position. Returns the number read (0 at EOF). */
-  int read(byte[] buf, int off, int len) {
+  @Override
+  public int read(byte[] buf, int off, int len) {
     try {
       if (len <= 0) return 0;
       int total = 0;

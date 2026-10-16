@@ -14,7 +14,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
 /** The "add" command: adds or deletes files from the archive. */
 final class Adder {
@@ -71,33 +70,81 @@ final class Adder {
     return a.compareName(b);
   };
 
-  /** Adds or deletes files from the archive. Returns 1 if error else 0. */
+  // State shared by the phases of an update
+  private final int[] errors = {0};
+  private boolean seq;            // sequential format
+  private Dialect dialect;        // block magic written
+  private boolean archiveExists;  // classic: first part existed at the start
+  private long headerPos;         // where the transaction header is written
+  private long offset;            // total size of existing parts
+  private byte[] salt;            // encryption salt
+  private String arcname;         // archive file (part, tome) written
+  private String method;          // compression method with block size
+  private long blocksize;
+  private long maxFragment;
+  private long minFragment;
+  private long totalSize;         // size of all input
+  private long totalDone;         // input deduped so far
+  private long dedupesize;        // input size after dedupe
+  private OutputArchive out;      // archive being written; null when committed
+  private OutputArchive outi;     // classic format: index being written
+  private boolean created;        // classic format: the archive file did not exist before
+  private long indexStart = -1;   // classic format with index: its length before, -1 if new
+  boolean rollbackOnAbort;        // abort restores the classic archive (the library does this)
+  private CompressJob job;
+  private MemoryBuffer sb;        // block to compress
+
+  // Journaling format
+  private long date;              // date of the update
+  private HtIndex htinv;          // sha1 -> fragment ID
+  private int htsize;             // fragments at start of update
+  private long headerEnd;         // end of the transaction header
+  private int frags;              // number of fragments in sb
+  private long redundancy;        // estimated bytes that can be compressed out of sb
+  private long text;              // number of fragments containing text
+  private long exe;               // number of fragments containing x86 (exe, dll)
+  private static final int ON = 4;  // number of order-1 tables to save
+  private final byte[] o1prev = new byte[ON * 256];  // last ON order 1 predictions
+  private FragmentScanner sc;
+  private final List<Integer> blocklist = new ArrayList<>();  // list of starting fragments
+
+  /** Adds or deletes files from the archive (the command line). Returns 1 if error else 0. */
   int add() {
-    CompressJob[] jobHolder = new CompressJob[1];
     try {
-      return add(jobHolder);
+      prepare();
+
+      // Make list of files to add or delete
+      for (String f : j.files) j.scandir(f);
+      List<DT> vf = plan(j.edt.values());
+
+      // Test for reliable access to archive
+      if (!seq && archiveExists != j.io.exists(Strs.subpart(j.archive, 1)))
+        throw ZpaqException.error("archive access is intermittent");
+
+      start(vf.size(), true);
+      for (DT p : vf) addExternal(p, p.name());
+      return finish();
     } catch (RuntimeException | Error e) {
-      if (curOut != null) curOut.abort();  // do not commit a partial tome
+      abort();
       throw e;
-    } finally {
-      if (jobHolder[0] != null) jobHolder[0].abort();  // no-op if finished normally
     }
   }
 
-  private OutputArchive curOut;  // tome being written, to abort on failure
-
-  private int add(CompressJob[] jobHolder) {
-    final boolean seq = j.format == Format.SEQUENTIAL;
-    final Dialect dialect = seq ? Dialect.JPAQ : Dialect.STANDARD;
+  /**
+   * Reads the archive or index, decides where and how to write. Nothing is written yet; the
+   * archive state (dt) is the one before the update.
+   */
+  void prepare() {
+    seq = j.format == Format.SEQUENTIAL;
+    dialect = seq ? Dialect.JPAQ : Dialect.STANDARD;
     j.io.checkWritable();
     if (seq && j.indexOut == null) throw ZpaqException.error("sequential format needs an index");
 
     // Read archive or index into ht, dt, ver.
-    int[] errors = {0};
-    final boolean archiveExists = !seq && j.io.exists(Strs.subpart(j.archive, 1));
+    archiveExists = !seq && j.io.exists(Strs.subpart(j.archive, 1));
     String arcname = j.archive;  // input archive name
     if (j.index != null) arcname = j.index;
-    long headerPos = 0;
+    headerPos = 0;
     // Sequential: the caller says whether there is an index; if so it must be readable
     if (seq ? j.index != null : j.io.exists(Strs.subpart(arcname, 1))) {
       headerPos = j.readArchive(arcname, errors);
@@ -108,8 +155,8 @@ final class Adder {
 
     // Set arcname, offset, header_pos, and salt to open out archive
     arcname = j.archive;  // output file name
-    long offset = 0;      // total size of existing parts
-    byte[] salt = new byte[32];  // encryption salt
+    offset = 0;
+    salt = new byte[32];
     if (j.password != null) Crypto.random(salt, 32);
 
     if (j.index != null || seq) {  // Remote archive
@@ -165,7 +212,9 @@ final class Adder {
         }
       }
     }
+    this.arcname = arcname;
     final boolean updating = !seq && j.io.exists(arcname);
+    created = !updating;
     j.ctx.emit(new InfoLine.AddTarget(arcname, !updating, headerPos, offset,
         (updating ? "Updating " : "Creating ") + arcname
             + String.format(java.util.Locale.ROOT, " at offset %1.0f + %1.0f\n",
@@ -182,16 +231,17 @@ final class Adder {
       throw ZpaqException.error("-method must begin with 0..5, x, s");
     if (method.charAt(0) == 's' && (j.index != null || seq))
       throw ZpaqException.error("cannot index in streaming mode");
+    this.method = method;
 
     // Set block and fragment sizes
     if (j.fragment < 0) j.fragment = 0;
     final int fragment = j.fragment;
     final int logBlocksize = 20 + Strs.atoi(method, 1);
     if (logBlocksize < 20 || logBlocksize > 31) throw ZpaqException.error("blocksize must be 0..11");
-    final long blocksize = (1L << logBlocksize) - 4096;
-    final long maxFragment = fragment > 19 || (8128L << fragment) > blocksize - 12
+    blocksize = (1L << logBlocksize) - 4096;
+    maxFragment = fragment > 19 || (8128L << fragment) > blocksize - 12
         ? blocksize - 12 : 8128L << fragment;
-    final long minFragment = fragment > 25 || (64L << fragment) > maxFragment
+    minFragment = fragment > 25 || (64L << fragment) > maxFragment
         ? maxFragment : 64L << fragment;
 
     // Don't mix streaming and journaling
@@ -202,15 +252,21 @@ final class Adder {
         throw ZpaqException.error("cannot update streaming archive in journaling format");
       }
     }
+  }
 
-    // Make list of files to add or delete
-    for (String f : j.files) j.scandir(f);
+  /** True if the method writes the streaming format (one block per file, no deduplication). */
+  boolean streaming() {
+    return method.charAt(0) == 's';
+  }
 
-    // Sort the files to be added by filename extension and decreasing size
+  /**
+   * Of the external files in edt, marks those that are in the archive (dt) as kept and returns
+   * the ones to compress (new or changed), sorted by filename extension and decreasing size.
+   * Adds their size to the total.
+   */
+  List<DT> plan(Iterable<DT> external) {
     List<DT> vf = new ArrayList<>();
-    long totalSize = 0;  // size of all input
-    long totalDone = 0;  // input deduped so far
-    for (DT p : j.edt.values()) {
+    for (DT p : external) {
       final String pname = p.name();
       DT a = j.dt.get(j.rename(pname));
       if (a != null) a.data(1);  // keep
@@ -242,81 +298,35 @@ final class Adder {
       }
     }
     vf.sort(COMPARE_FILENAME);
+    return vf;
+  }
 
-    // Test for reliable access to archive
-    if (!seq && archiveExists != j.io.exists(Strs.subpart(j.archive, 1)))
-      throw ZpaqException.error("archive access is intermittent");
-
+  /**
+   * Opens the output, starts the compression threads and writes the transaction header.
+   *
+   * @param nfiles number of files to compress, for the plan message
+   * @param announce emit the plan message (the command line knows the files in advance)
+   */
+  void start(int nfiles, boolean announce) {
     // Open output
-    OutputArchive out = new OutputArchive(j.io, arcname, j.password, salt, offset);
-    curOut = out;
+    out = new OutputArchive(j.io, arcname, j.password, salt, offset);
     out.seek(headerPos, InputArchive.Whence.SET);
 
     // Start compress and write jobs
     final int ntid = j.threads * 2 - 1;
-    CompressJob job = new CompressJob(j.ctx, j.threads, ntid, out, dialect);
-    jobHolder[0] = job;
-    j.ctx.emit(new InfoLine.AddPlan(totalSize / 1000000.0, vf.size(), method, j.threads, j.date,
-        String.format(java.util.Locale.ROOT, "Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
-            totalSize / 1000000.0, vf.size(), method, j.threads, Dates.dateToString(j.date))));
+    job = new CompressJob(j.ctx, j.threads, ntid, out, dialect);
+    if (announce) {
+      j.ctx.emit(new InfoLine.AddPlan(totalSize / 1000000.0, nfiles, method, j.threads, j.date,
+          String.format(java.util.Locale.ROOT, "Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
+              totalSize / 1000000.0, nfiles, method, j.threads, Dates.dateToString(j.date))));
+    }
 
-    // Append in streaming mode. Each file is a separate block. Large files are split into blocks
-    // of size blocksize.
-    long dedupesize = 0;  // input size after dedupe
-    if (method.charAt(0) == 's') {
-      MemoryBuffer sb = new MemoryBuffer((int) (blocksize + 4096 - 128));
-      for (DT p : vf) {
-        j.ctx.printProgress(totalSize, totalDone, j.summary);
-        if (j.summary <= 0) {
-          j.ctx.emit(new InfoLine.FileAdded(p.name(), p.name(), false, p.size(), -1,
-              String.format(java.util.Locale.ROOT, "+ %s %1.0f\n", p.name(), p.size() + 0.0)));
-        }
-        Exception[] err = new Exception[1];
-        ArchiveFile in = ArchiveFile.openRead(j.ctx.fs, p.name(), err);
-        if (in == null) {
-          j.ctx.fs.printerr(p.name(), err[0]);
-          totalSize -= p.size();
-          ++errors[0];
-          continue;
-        }
-        long i = 0;
-        final int bufsize = 4096;
-        byte[] buf = new byte[bufsize];
-        while (true) {
-          int r = in.read(buf, 0, bufsize);
-          sb.write(buf, 0, r);
-          i += r;
-          if (r == 0 || sb.size() + bufsize > blocksize) {
-            String filename = "";
-            String comment = "";
-            if (i == sb.size()) {  // first block?
-              filename = j.rename(p.name());
-              comment = Strs.itos(p.date());
-              if ((p.attr() & 255) > 0) {
-                comment += " ";
-                comment += (char) (p.attr() & 255);
-                comment += Strs.itos(p.attr() >> 8);
-              }
-            }
-            totalDone += sb.size();
-            job.write(sb, filename, method, comment);
-          }
-          if (r == 0) break;
-        }
-        in.close();
-      }
-
-      // Wait for jobs to finish
-      job.write(sb, null, "", null);  // signal end of input
-      job.join();
-
-      // Done
-      final long outsize = out.tell();
-      j.ctx.printf("%1.0f + (%1.0f -> %1.0f) = %1.0f\n", (double) headerPos, (double) totalSize,
-          (double) (outsize - headerPos), (double) outsize);
-      out.close();
-      return errors[0] > 0 ? 1 : 0;
-    }  // end if streaming
+    // Streaming mode: each file is a separate block. Large files are split into blocks of size
+    // blocksize.
+    if (streaming()) {
+      sb = new MemoryBuffer((int) (blocksize + 4096 - 128));
+      return;
+    }
 
     // Adjust date to maintain sequential order
     if (j.ver.size() > 0 && j.ver.get(j.ver.size() - 1).lastdate >= j.date) {
@@ -326,173 +336,273 @@ final class Adder {
               Dates.dateToString(j.date), Dates.dateToString(newdate))));
       j.date = newdate;
     }
-    final long date = j.date;
+    date = j.date;
 
     // Build htinv for fast lookups of sha1 in ht
-    HtIndex htinv = new HtIndex(j.ht, (long) j.ht.size() + (totalSize >> (10 + fragment)) + vf.size());
-    final int htsize = j.ht.size();  // fragments at start of update
+    htinv = new HtIndex(j.ht, (long) j.ht.size() + (totalSize >> (10 + j.fragment)) + nfiles);
+    htsize = j.ht.size();
 
     // reserve space for the header block
     writeJidacHeader(out, date, seq ? 0 : -1, htsize, dialect);  // sequential: never patched
-    final long headerEnd = out.tell();
+    headerEnd = out.tell();
 
-    // Compress until end of last file
-    MemoryBuffer sb = new MemoryBuffer((int) (blocksize + 4096 - 128));  // block to compress
-    int frags = 0;       // number of fragments in sb
-    long redundancy = 0; // estimated bytes that can be compressed out of sb
-    long text = 0;       // number of fragments containing text
-    long exe = 0;        // number of fragments containing x86 (exe, dll)
-    final int ON = 4;    // number of order-1 tables to save
-    byte[] o1prev = new byte[ON * 256];  // last ON order 1 predictions
-    final FragmentScanner sc = new FragmentScanner((int) maxFragment, (int) minFragment, fragment);
+    sb = new MemoryBuffer((int) (blocksize + 4096 - 128));
+    sc = new FragmentScanner((int) maxFragment, (int) minFragment, j.fragment);
+  }
+
+  /** The date of the update (after {@link #start}). */
+  long date() {
+    return j.date;
+  }
+
+  /** Number of files that could not be read. */
+  int errors() {
+    return errors[0];
+  }
+
+  /**
+   * Adds the external file p (an entry of edt) from the local file {@code source}. A file that
+   * cannot be opened is reported and skipped.
+   */
+  void addExternal(DT p, String source) {
+    if (streaming()) {
+      addStreaming(p, source);
+      return;
+    }
+
+    // Open input file
+    sc.newFile();
+    Exception[] err = new Exception[1];
+    ArchiveFile in = ArchiveFile.openRead(j.ctx.fs, source, err);
+    if (in == null) {  // skip if not found
+      p.date(0);
+      totalSize -= p.size();
+      j.ctx.fs.printerr(p.name(), err[0]);
+      ++errors[0];
+      return;
+    }
+    p.data(1);  // add
+    try {
+      compress(p, in, p.size(), false);
+    } finally {
+      in.close();
+    }
+  }
+
+  /**
+   * Adds the content of a stream as the external file p (an entry of edt), whose size is set to
+   * the number of bytes read.
+   */
+  void addStream(DT p, java.io.InputStream data) {
+    if (streaming()) throw new IllegalStateException("streaming method");
+    sc.newFile();
+    p.data(1);  // add
+    compress(p, Source.of(data), 0, true);
+  }
+
+  /**
+   * Splits a file into fragments, appends the new ones to the block being filled and records the
+   * fragment pointers of p. p == null completes the last block.
+   *
+   * @param esize expected size of the file, used to decide whether it starts a new block
+   * @param measure set the size of p to the number of bytes read
+   */
+  private void compress(DT p, Source in, long esize, boolean measure) {
     final byte[] fragbuf = sc.fragbuf;
-    List<Integer> blocklist = new ArrayList<>();  // list of starting fragments
 
-    // For each file to be added
-    for (int fi = 0; fi <= vf.size(); ++fi) {
-      ArchiveFile in = null;
-      DT p = null;
-      if (fi < vf.size()) {
-        p = vf.get(fi);
+    // Read fragments
+    long fsize = 0;  // file size after dedupe
+    long read = 0;   // file size
+    for (int fj = 0; true; ++fj) {
+      int sz = 0;      // fragment size
+      long hits = 0;   // correct prediction count
+      int c = -1;      // current byte
+      int htptr = 0;   // fragment index
+      byte[] sha1result = new byte[20];  // fragment hash
+      byte[] o1 = new byte[256];         // order 1 context -> predicted byte
+      if (p != null) {
+        Sha1 sha1 = new Sha1();
+        c = sc.scan(in, sha1);
+        sz = sc.sz;
+        hits = sc.hits;
+        o1 = sc.o1;
+        totalDone += sz;
+        read += sz;
 
-        // Open input file
-        sc.newFile();
-        Exception[] err = new Exception[1];
-        in = ArchiveFile.openRead(j.ctx.fs, p.name(), err);
-        if (in == null) {  // skip if not found
-          p.date(0);
-          totalSize -= p.size();
-          j.ctx.fs.printerr(p.name(), err[0]);
-          ++errors[0];
-          continue;
-        }
-        p.data(1);  // add
+        // Look for matching fragment
+        sha1result = sha1.result();
+        htptr = htinv.find(sha1result, 0);
       }
 
-      // Read fragments
-      long fsize = 0;  // file size after dedupe
-      for (int fj = 0; true; ++fj) {
-        int sz = 0;      // fragment size
-        long hits = 0;   // correct prediction count
-        int c = -1;      // current byte
-        int htptr = 0;   // fragment index
-        byte[] sha1result = new byte[20];  // fragment hash
-        byte[] o1 = new byte[256];         // order 1 context -> predicted byte
-        if (fi < vf.size()) {
-          Sha1 sha1 = new Sha1();
-          c = sc.scan(in, sha1);
-          sz = sc.sz;
-          hits = sc.hits;
-          o1 = sc.o1;
-          totalDone += sz;
+      if (htptr == 0) {  // not matched or last block
 
-          // Look for matching fragment
-          sha1result = sha1.result();
-          htptr = htinv.find(sha1result, 0);
-        }  // end if fi<vf.size()
+        // Analyze fragment for redundancy, x86, text. Test for text: letters, digits, '.' and
+        // ',' followed by spaces and no invalid UTF-8. Test for exe: 139 (mov reg, r/m) in lots
+        // of contexts. 4 tests for redundancy, measured as hits/sz. Take the highest of:
+        //   1. Successful prediction count in o1.
+        //   2. Non-uniform distribution in o1 (counted in o2).
+        //   3. Fraction of zeros in o1 (bytes never seen).
+        //   4. Fraction of matches between o1 and previous o1 (o1prev).
+        hits = sc.analyze(o1, sz, hits, o1prev, ON, DT_TABLE);
+        final int text1 = sc.text1;
+        final int exe1 = sc.exe1;
 
-        if (htptr == 0) {  // not matched or last block
-
-          // Analyze fragment for redundancy, x86, text. Test for text: letters, digits, '.' and
-          // ',' followed by spaces and no invalid UTF-8. Test for exe: 139 (mov reg, r/m) in lots
-          // of contexts. 4 tests for redundancy, measured as hits/sz. Take the highest of:
-          //   1. Successful prediction count in o1.
-          //   2. Non-uniform distribution in o1 (counted in o2).
-          //   3. Fraction of zeros in o1 (bytes never seen).
-          //   4. Fraction of matches between o1 and previous o1 (o1prev).
-          hits = sc.analyze(o1, sz, hits, o1prev, ON, DT_TABLE);
-          final int text1 = sc.text1;
-          final int exe1 = sc.exe1;
-
-          // Start a new block if the current block is almost full, or at the start of a file
-          // that won't fit or doesn't share mutual information with the current block, or last
-          // file.
-          boolean newblock = false;
-          if (frags > 0 && fj == 0 && fi < vf.size()) {
-            final long esize = vf.get(fi).size();
-            final long newsize = sb.size() + esize + (esize >> 14) + 4096 + frags * 4L;
-            if (newsize > blocksize / 4 && redundancy < sb.size() / 128) newblock = true;
-            if (newblock) {  // test for mutual information
-              int ct = 0;
-              for (int i = 0; i < 256 * ON; ++i)
-                if (o1prev[i] != 0 && o1prev[i] == o1[i & 255]) ++ct;
-              if (ct > ON * 2) newblock = false;
-            }
-            if (newsize >= blocksize) newblock = true;  // won't fit?
+        // Start a new block if the current block is almost full, or at the start of a file
+        // that won't fit or doesn't share mutual information with the current block, or last
+        // file.
+        boolean newblock = false;
+        if (frags > 0 && fj == 0 && p != null) {
+          final long newsize = sb.size() + esize + (esize >> 14) + 4096 + frags * 4L;
+          if (newsize > blocksize / 4 && redundancy < sb.size() / 128) newblock = true;
+          if (newblock) {  // test for mutual information
+            int ct = 0;
+            for (int i = 0; i < 256 * ON; ++i)
+              if (o1prev[i] != 0 && o1prev[i] == o1[i & 255]) ++ct;
+            if (ct > ON * 2) newblock = false;
           }
-          if (sb.size() + (long) sz + 80 + frags * 4L >= blocksize) newblock = true;  // full?
-          if (fi == vf.size()) newblock = true;  // last file?
-          if (frags < 1) newblock = false;  // block is empty?
-
-          // Pad sb with fragment size list, then compress
-          if (newblock) {
-            for (int i = j.ht.size() - frags; i < j.ht.size(); ++i)
-              Jidac.puti(sb, j.ht.usize(i), 4);  // list of frag sizes
-            Jidac.puti(sb, 0, 4);  // omit first frag ID to make block movable
-            Jidac.puti(sb, frags, 4);  // number of frags
-            String m = method;
-            if (Strs.isdigit(method.charAt(0)))
-              m += "," + Strs.itos(redundancy / (sb.size() / 256 + 1)) + ","
-                  + Strs.itos((exe > frags ? 1 : 0) * 2 + (text > frags ? 1 : 0));
-            String fn = "jDC" + Strs.itos(date, 14) + "d" + Strs.itos(j.ht.size() - frags, 10);
-            j.ctx.printProgress(totalSize, totalDone, j.summary);
-            if (j.summary <= 0)
-              j.ctx.emit(new InfoLine.BlockCompressed(j.ht.size() - frags, j.ht.size() - 1,
-                  sb.size(), m, String.format(java.util.Locale.ROOT, "[%d..%d] %d -method %s\n",
-                      j.ht.size() - frags, j.ht.size() - 1, sb.size(), m)));
-            if (method.charAt(0) != 'i') {
-              job.write(sb, fn, m, null);
-            } else {  // index: don't compress data
-              job.csize.add(sb.size());
-              sb.resize(0);
-            }
-            blocklist.add(j.ht.size() - frags);  // mark block start
-            frags = 0;
-            redundancy = text = exe = 0;
-            Arrays.fill(o1prev, (byte) 0);
-          }
-
-          // Append fragbuf to sb and update block statistics
-          sb.write(fragbuf, 0, sz);
-          ++frags;
-          redundancy += hits;
-          exe += exe1 * 4L;
-          text += text1 * 2L;
-          if (sz >= minFragment) {
-            System.arraycopy(o1prev, 256, o1prev, 0, 256 * (ON - 1));
-            System.arraycopy(o1, 0, o1prev, 256 * (ON - 1), 256);
-          }
-        }  // end if frag not matched or last block
-
-        // Update HT and ptr list
-        if (fi < vf.size()) {
-          if (htptr == 0) {
-            htptr = j.ht.size();
-            j.ht.add(sha1result, 0, sz);
-            htinv.update();
-            fsize += sz;
-          }
-          p.ptrPush(htptr);
+          if (newsize >= blocksize) newblock = true;  // won't fit?
         }
-        if (c == -1) break;
-      }  // end for each fragment fj
-      if (fi < vf.size()) {
-        dedupesize += fsize;
-        j.ctx.printProgress(totalSize, totalDone, j.summary);
-        if (j.summary <= 0) {
-          String newname = j.rename(p.name());
-          DT a = j.dt.get(newname);
-          final boolean upd = a != null && a.date() != 0;
-          StringBuilder t = new StringBuilder(upd ? "# " : "+ ").append(p.name());
-          if (!newname.equals(p.name())) t.append(" -> ").append(newname);
-          t.append(String.format(java.util.Locale.ROOT, " %1.0f", p.size() + 0.0));
-          if (fsize != p.size()) t.append(String.format(java.util.Locale.ROOT, " -> %1.0f", fsize + 0.0));
-          t.append("\n");
-          j.ctx.emit(new InfoLine.FileAdded(p.name(), newname, upd, p.size(), fsize, t.toString()));
+        if (sb.size() + (long) sz + 80 + frags * 4L >= blocksize) newblock = true;  // full?
+        if (p == null) newblock = true;  // last file?
+        if (frags < 1) newblock = false;  // block is empty?
+
+        // Pad sb with fragment size list, then compress
+        if (newblock) {
+          for (int i = j.ht.size() - frags; i < j.ht.size(); ++i)
+            Jidac.puti(sb, j.ht.usize(i), 4);  // list of frag sizes
+          Jidac.puti(sb, 0, 4);  // omit first frag ID to make block movable
+          Jidac.puti(sb, frags, 4);  // number of frags
+          String m = method;
+          if (Strs.isdigit(method.charAt(0)))
+            m += "," + Strs.itos(redundancy / (sb.size() / 256 + 1)) + ","
+                + Strs.itos((exe > frags ? 1 : 0) * 2 + (text > frags ? 1 : 0));
+          String fn = "jDC" + Strs.itos(date, 14) + "d" + Strs.itos(j.ht.size() - frags, 10);
+          j.ctx.printProgress(totalSize, totalDone, j.summary);
+          if (j.summary <= 0)
+            j.ctx.emit(new InfoLine.BlockCompressed(j.ht.size() - frags, j.ht.size() - 1,
+                sb.size(), m, String.format(java.util.Locale.ROOT, "[%d..%d] %d -method %s\n",
+                    j.ht.size() - frags, j.ht.size() - 1, sb.size(), m)));
+          if (method.charAt(0) != 'i') {
+            job.write(sb, fn, m, null);
+          } else {  // index: don't compress data
+            job.csize.add(sb.size());
+            sb.resize(0);
+          }
+          blocklist.add(j.ht.size() - frags);  // mark block start
+          frags = 0;
+          redundancy = text = exe = 0;
+          Arrays.fill(o1prev, (byte) 0);
         }
-        in.close();
+
+        // Append fragbuf to sb and update block statistics
+        sb.write(fragbuf, 0, sz);
+        ++frags;
+        redundancy += hits;
+        exe += exe1 * 4L;
+        text += text1 * 2L;
+        if (sz >= minFragment) {
+          System.arraycopy(o1prev, 256, o1prev, 0, 256 * (ON - 1));
+          System.arraycopy(o1, 0, o1prev, 256 * (ON - 1), 256);
+        }
+      }  // end if frag not matched or last block
+
+      // Update HT and ptr list
+      if (p != null) {
+        if (htptr == 0) {
+          htptr = j.ht.size();
+          j.ht.add(sha1result, 0, sz);
+          htinv.update();
+          fsize += sz;
+        }
+        p.ptrPush(htptr);
       }
-    }  // end for each file fi
+      if (c == -1) break;
+    }  // end for each fragment fj
+    if (p != null) {
+      if (measure) {
+        p.size(read);
+        totalSize += read;
+      }
+      dedupesize += fsize;
+      j.ctx.printProgress(totalSize, totalDone, j.summary);
+      if (j.summary <= 0) {
+        String newname = j.rename(p.name());
+        DT a = j.dt.get(newname);
+        final boolean upd = a != null && a.date() != 0;
+        StringBuilder t = new StringBuilder(upd ? "# " : "+ ").append(p.name());
+        if (!newname.equals(p.name())) t.append(" -> ").append(newname);
+        t.append(String.format(java.util.Locale.ROOT, " %1.0f", p.size() + 0.0));
+        if (fsize != p.size()) t.append(String.format(java.util.Locale.ROOT, " -> %1.0f", fsize + 0.0));
+        t.append("\n");
+        j.ctx.emit(new InfoLine.FileAdded(p.name(), newname, upd, p.size(), fsize, t.toString()));
+      }
+    }
+  }
+
+  /** Streaming format: appends the file as blocks of its own. */
+  private void addStreaming(DT p, String source) {
+    j.ctx.printProgress(totalSize, totalDone, j.summary);
+    if (j.summary <= 0) {
+      j.ctx.emit(new InfoLine.FileAdded(p.name(), p.name(), false, p.size(), -1,
+          String.format(java.util.Locale.ROOT, "+ %s %1.0f\n", p.name(), p.size() + 0.0)));
+    }
+    Exception[] err = new Exception[1];
+    ArchiveFile in = ArchiveFile.openRead(j.ctx.fs, source, err);
+    if (in == null) {
+      j.ctx.fs.printerr(p.name(), err[0]);
+      totalSize -= p.size();
+      ++errors[0];
+      return;
+    }
+    long i = 0;
+    final int bufsize = 4096;
+    byte[] buf = new byte[bufsize];
+    while (true) {
+      int r = in.read(buf, 0, bufsize);
+      sb.write(buf, 0, r);
+      i += r;
+      if (r == 0 || sb.size() + bufsize > blocksize) {
+        String filename = "";
+        String comment = "";
+        if (i == sb.size()) {  // first block?
+          filename = j.rename(p.name());
+          comment = Strs.itos(p.date());
+          if ((p.attr() & 255) > 0) {
+            comment += " ";
+            comment += (char) (p.attr() & 255);
+            comment += Strs.itos(p.attr() >> 8);
+          }
+        }
+        totalDone += sb.size();
+        job.write(sb, filename, method, comment);
+      }
+      if (r == 0) break;
+    }
+    in.close();
+  }
+
+  /**
+   * Completes the update: writes the fragment tables and the file list (additions of the files
+   * in edt, deletions of the files in dt that are not kept) and commits. Returns 1 if a file
+   * could not be added, else 0.
+   */
+  int finish() {
+    if (streaming()) {
+      // Wait for jobs to finish
+      job.write(sb, null, "", null);  // signal end of input
+      job.join();
+
+      // Done
+      final long outsize = out.tell();
+      j.ctx.printf("%1.0f + (%1.0f -> %1.0f) = %1.0f\n", (double) headerPos, (double) totalSize,
+          (double) (outsize - headerPos), (double) outsize);
+      out.close();
+      out = null;
+      return errors[0] > 0 ? 1 : 0;
+    }
+
+    // Complete the last block
+    compress(null, null, 0, false);
 
     // Wait for jobs to finish
     job.write(sb, null, "", null);  // signal end of input
@@ -502,7 +612,9 @@ final class Adder {
     salt[0] ^= '7' ^ 'z';
     // Sequential format: the index segment is collected and written after the tome is complete
     MemoryBuffer indexSegment = seq ? new MemoryBuffer() : null;
-    OutputArchive outi = seq ? null
+    if (rollbackOnAbort && !seq && j.index != null && j.io.exists(j.index))
+      indexStart = j.io.length(j.index);
+    outi = seq ? null
         : new OutputArchive(j.io, j.index != null ? j.index : "", j.password, salt, 0);
     WriterPair wp = new WriterPair();
     wp.a = out;
@@ -608,7 +720,7 @@ final class Adder {
         out.close();
         writeSequentialIndex(indexSegment, salt);
       }
-      curOut = null;
+      out = null;
       j.ctx.flush();
       addResult(headerPos, totalSize, dedupesize, archiveEnd);
       return errors[0] > 0 ? 1 : 0;
@@ -616,13 +728,14 @@ final class Adder {
 
     // Back up and write the header
     outi.close();
+    outi = null;
     long archiveEnd = out.tell();
     out.seek(headerPos, InputArchive.Whence.SET);
     writeJidacHeader(out, date, cdatasize, htsize);
     out.seek(0, InputArchive.Whence.END);
     final long archiveSize = out.tell();
     out.close();
-    curOut = null;
+    out = null;
 
     // Truncate empty update from archive (if not indexed)
     if (j.index == null) {
@@ -644,6 +757,34 @@ final class Adder {
     j.ctx.flush();
     addResult(headerPos, totalSize, dedupesize, archiveEnd);
     return errors[0] > 0 ? 1 : 0;
+  }
+
+  /**
+   * Stops an update that failed or was abandoned: the compression threads end and a partial tome
+   * is not committed (where the storage allows; a classic archive keeps a transaction that
+   * readers ignore).
+   */
+  void abort() {
+    if (job != null) job.abort();  // no-op if finished normally
+    final boolean open = out != null;
+    if (out != null) out.abort();
+    out = null;
+    if (outi != null) outi.abort();
+    if (!rollbackOnAbort || seq || !open) return;
+
+    // Classic format: take back what was written, so the archive is as it was
+    try {
+      if (created) j.io.delete(arcname);
+      else if (!truncate(arcname, headerPos)) j.ctx.fs.printerr(arcname, "truncate failed");
+      if (outi != null && j.index != null) {
+        if (indexStart < 0) j.io.delete(j.index);
+        else if (!truncate(j.index, indexStart)) j.ctx.fs.printerr(j.index, "truncate failed");
+      }
+    } catch (RuntimeException e) {
+      j.ctx.fs.printerr(arcname, e);
+    } finally {
+      outi = null;
+    }
   }
 
   private void addResult(long headerPos, long totalSize, long dedupesize, long archiveEnd) {
@@ -680,7 +821,7 @@ final class Adder {
       old = j.io.openRead(j.index, err);
       if (old == null) throw j.ctx.ioerr(j.index, err[0]);  // it was read before
     }
-    OutputArchive outi = new OutputArchive(j.io, j.indexOut, j.password, salt, 0);
+    OutputArchive idx = new OutputArchive(j.io, j.indexOut, j.password, salt, 0);
     try {
       if (old != null) {
         if (j.password != null) {  // the output starts with the same salt
@@ -690,12 +831,12 @@ final class Adder {
         }
         byte[] buf = new byte[1 << 16];
         int n;
-        while ((n = old.read(buf, 0, buf.length)) > 0) outi.writeRaw(buf, 0, n);
+        while ((n = old.read(buf, 0, buf.length)) > 0) idx.writeRaw(buf, 0, n);
       }
-      outi.write(segment.data(), 0, segment.size());
-      outi.close();
+      idx.write(segment.data(), 0, segment.size());
+      idx.close();
     } catch (RuntimeException e) {
-      outi.abort();
+      idx.abort();
       throw e;
     } finally {
       if (old != null) old.close();

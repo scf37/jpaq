@@ -41,7 +41,7 @@ final class FragmentScanner {
    * Reads the next fragment of {@code in} into {@link #fragbuf} and hashes it into {@code sha1}.
    * Returns -1 if the end of the file was reached, else 0.
    */
-  int scan(ArchiveFile in, Sha1 sha1) {
+  int scan(Source in, Sha1 sha1) {
     Arrays.fill(o1, (byte) 0);
     sz = 0;
     hits = 0;

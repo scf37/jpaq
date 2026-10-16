@@ -208,6 +208,11 @@ final class Extractor {
     for (DT p : j.dt.values()) {
       p.data(-1);  // skip
       if (p.date() != 0 && !p.name().isEmpty()) {
+        if (j.safeNames && !Jidac.isSafeName(p.name())) {
+          j.ctx.emit(new ErrorLine.FileError(p.name(), "name leaves the output directory", null,
+              p.name() + ": name leaves the output directory, skipped\n"));
+          continue;
+        }
         final String fn = j.rename(p.name());
         final boolean isdir = p.name().charAt(p.name().length() - 1) == '/';
         if (j.repack == null && !j.dotest && j.force && !isdir && equal(p, fn)) {
