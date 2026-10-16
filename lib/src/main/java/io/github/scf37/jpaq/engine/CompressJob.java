@@ -124,7 +124,7 @@ final class CompressJob {
 
   /** A worker failed: report it, stop everything, and let the main thread throw. */
   private void fail(String message, Throwable e) {
-    ctx.eprint(message);
+    ctx.diagnostic(message);
     if (failure == null) failure = e;
     abort();
   }

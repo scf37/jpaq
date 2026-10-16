@@ -1,80 +1,62 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.ErrorLine;
-import io.github.scf37.jpaq.InfoLine;
-import io.github.scf37.jpaq.Line;
+import io.github.scf37.jpaq.Event;
 import io.github.scf37.jpaq.libzpaq.ZpaqException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.function.Consumer;
 
 /**
- * What one run of a command needs from its surroundings: where its output goes, the directory
- * that relative file names are resolved against, and the clock. Nothing in the engine is global,
- * so runs with their own contexts can proceed in parallel.
- *
- * <p>The text of the lines given to the sink is a byte string (see {@link Strs}) like all text
- * inside the engine; {@link Lines#decode} converts a line to real text.
+ * What one operation needs from its surroundings: where its events go, the directory that
+ * relative local file names are resolved against, and the clock. Nothing in the engine is
+ * global, so operations with their own contexts run in parallel.
  */
 public final class Ctx {
-  /** Receives the output of a run, from any of its threads but never concurrently. */
-  public interface Sink {
-    void emit(Line line);
-
-    /** Called where the command line flushes standard output. */
-    default void flush() {}
-  }
-
-  private final Sink sink;
+  private final Consumer<Event> sink;
   private final Instant clock;
   private final long start = System.currentTimeMillis();
   final Fs fs;
 
   /**
-   * @param workDir directory against which relative file names are resolved, null for the
+   * @param sink receives the events, from any thread of the operation but never concurrently
+   * @param workDir directory against which relative local names are resolved, null for the
    *     process working directory
-   * @param clock the current time for the dates of updates, null for the system clock
+   * @param clock the current time for the date of an update, null for the system clock
    */
-  public Ctx(Sink sink, Path workDir, Instant clock) {
+  public Ctx(Consumer<Event> sink, Path workDir, Instant clock) {
     this.sink = sink;
     this.clock = clock;
     this.fs = new Fs(this, workDir);
   }
 
-  public synchronized void emit(Line line) {
-    sink.emit(line);
+  public synchronized void emit(Event e) {
+    sink.accept(e);
   }
 
-  public synchronized void flush() {
-    sink.flush();
+  /** Text of a byte string, for events. */
+  static String t(String bytes) {
+    return Strs.fromBytes(bytes);
   }
 
-  /** printf to stdout. */
-  void printf(String format, Object... args) {
-    print(String.format(java.util.Locale.ROOT, format, args));
+  /** Information to show (stdout of zpaq). */
+  void note(String text) {
+    emit(new Event.Note(t(text)));
   }
 
-  public void print(String s) {
-    emit(new InfoLine.Text(s));
+  /** A diagnostic (stderr of zpaq). */
+  void diagnostic(String text) {
+    emit(new Event.Diagnostic(t(text)));
   }
 
-  /** Text to stderr. */
-  public void eprint(String s) {
-    emit(new ErrorLine.Message(s));
-  }
-
-  void eprintf(String format, Object... args) {
-    eprint(String.format(java.util.Locale.ROOT, format, args));
-  }
-
-  /** Milliseconds since the run started. */
-  public long elapsedMillis() {
+  /** Milliseconds since the operation started. */
+  long elapsedMillis() {
     return System.currentTimeMillis() - start;
   }
 
-  /** The current time: the clock of the run if it has one, else the system clock. */
-  public Instant currentTime() {
+  /** The current time: the clock of the operation if it has one, else the system clock. */
+  Instant currentTime() {
     return clock != null ? clock : Instant.now();
   }
 
@@ -86,16 +68,12 @@ public final class Ctx {
         + t.getSecond();
   }
 
-  /** Prints percent done (td/ts) and estimated time remaining. */
-  void printProgress(long ts, long td, int sum) {
+  /** Reports percent done (td/ts) and estimated time remaining, once there is something done. */
+  void printProgress(long ts, long td) {
     if (td > ts) td = ts;
     if (td >= 1000000) {
       double eta = 0.001 * elapsedMillis() * (ts - td) / (td + 1.0);
-      final double percent = td * 100.0 / (ts + 0.5);
-      emit(new InfoLine.Progress(percent, (int) eta,
-          String.format(java.util.Locale.ROOT, "%5.2f%% %d:%02d:%02d %s", percent,
-              (int) (eta / 3600), (int) (eta / 60) % 60, (int) eta % 60, sum > 0 ? "\r" : "")));
-      if (sum > 0) flush();
+      emit(new Event.Progress(td * 100.0 / (ts + 0.5), (int) eta));
     }
   }
 

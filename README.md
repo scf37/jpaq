@@ -6,8 +6,8 @@ A Java 25 port of the [ZPAQ](http://mattmahoney.net/dc/zpaq.html) journaling arc
 | module | artifact | contents |
 |--------|----------|----------|
 | [`libzpaq/`](libzpaq) | `jpaq-libzpaq` | the compression library: ZPAQ level 2 compressor / decompressor, ZPAQL compiler and interpreter, LZ77 / BWT / E8E9 preprocessors, SHA-1, SHA-256, AES-CTR, scrypt (see [Compression library](#compression-library)) |
-| [`lib/`](lib) | `jpaq-lib` | the archive library: create, update, read and extract zpaq and jpaq journaling archives (deduplication, versions, encryption, multi-part archives, indexes), with files added from streams and read as streams, and archive files in any storage (see [Archive library](#archive-library)) |
-| [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`) on top of the archive library |
+| [`lib/`](lib) | `jpaq-lib` | the archive library: create, update, read, extract and repack zpaq and jpaq journaling archives (deduplication, versions, encryption, multi-part archives, indexes) of local files, with the archive files in any storage, streaming ones included (see [Archive library](#archive-library)) |
+| [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`), built on the public API of the archive library only |
 | [`cpp/`](cpp) | – | the original C++ sources the port was made from (kept as the reference implementation) |
 | [`tools/difftest/`](tools/difftest) | – | differential test tools that run this port and the C++ original side by side |
 
@@ -73,14 +73,13 @@ Differences from the C++ program:
 ### Running the command line in process
 
 `io.github.scf37.jpaq.cli.Zpaq` runs a command line without spawning a JVM, with the output collected
-as text. Nothing calls `System.exit`, and calls may run in parallel.
+as text. Nothing calls `System.exit`, and calls may run in parallel. To work with archives from Java,
+use the archive library instead.
 
 ```java
 Zpaq.Result r = Zpaq.run(workDir, "a", "backup.zpaq", "data", "-m2", "-key", "secret");
 if (!r.ok()) throw new IOException(r.stderr());      // exitCode: 0 OK, 1 warnings, 2 errors
 ```
-
-For anything else use the archive library.
 
 ## Archive library
 
@@ -92,63 +91,61 @@ For anything else use the archive library.
 </dependency>
 ```
 
+The layers are separate: `jpaq-libzpaq` compresses, `jpaq-lib` works on incremental archives, and the
+command line is built on the public API of `jpaq-lib` (module `io.github.scf37.jpaq`, package
+`io.github.scf37.jpaq`) and nothing else. Everything the zpaq command line does, the API does.
+
 `ZpaqArchive` is a handle to an archive: where it is (a `Storage` and a name), its password, the format
-it is written in, the number of threads, and an optional listener for progress. Every operation reads or
-writes the archive anew; nothing is global, so operations on different archives run in parallel.
+it is written in, threads, the directory relative local names are resolved against, the clock and a
+listener. Each operation is one call:
 
 ```java
-ZpaqArchive archive = ZpaqArchive.of(Path.of("backup.zpaq")).withKey("secret");
+ZpaqArchive archive = ZpaqArchive.of(Path.of("/backup/home.zpaq")).withKey("secret")
+    .withListener(event -> log.debug("{}", event));
 
-// a new version: files from streams, local files, directory trees; deletions
-try (ArchiveUpdate u = archive.update(UpdateOptions.DEFAULT.withMethod("2"))) {
-  u.addTree(Path.of("/home/me/docs"), "docs");                 // like `zpaq add`: new and changed files,
-                                                              // entries of vanished files deleted
-  try (InputStream dump = pgDump.getInputStream()) {
-    u.add("db/dump.sql", dump);                               // any stream, read to its end
-  }
-  u.addFile("etc/app.conf", Path.of("/etc/app.conf"));
-  u.delete("tmp");                                            // and everything under it
-  UpdateResult r = u.commit();                                // without commit: nothing happened
-  log.info("version {}: +{} -{}, {} bytes new", r.version(), r.added(), r.removed(), r.compressedBytes());
-}
+// a new version of local files: new and changed files are added, vanished ones deleted
+AddResult r = archive.add(AddOptions.of("/home/me").withMethod("2")
+    .withPrune(name -> name.endsWith("/.cache")));               // not even looked at
 
-// read a version: entries, and contents as streams
-try (ArchiveReader r = archive.read(ReadOptions.LATEST.withVersion(-1))) {   // or withDate(instant)
-  for (ArchiveEntry e : r.entries()) System.out.println(e.name() + " " + e.size() + " " + e.lastModified());
-  try (InputStream in = r.open("db/dump.sql")) { restore(in); }
-  r.forEach((entry, content) -> tar.put(entry, content));   // everything, in storage order
-}
+// the file list of a version
+ArchiveContents c = archive.read(ReadOptions.LATEST.withVersion(-1L));   // or withDate(instant)
+for (ArchiveEntry e : c.entries()) System.out.println(e.name() + " " + e.size() + " " + e.lastModified());
 
-// extract to a directory, or just check everything
-ExtractResult x = archive.extract(Path.of("/restore"), ExtractOptions.DEFAULT.withInclude("docs").withOverwrite(true));
-if (!x.ok()) x.problems().forEach(p -> log.warn(p.text()));
-archive.verify();
+// extract (or test) a version, everything or a selection, wherever you want it
+archive.extract(new ExtractOptions(ReadOptions.LATEST.withSelect(n -> n.startsWith("/home/me/docs/")),
+    ExtractOptions.under("/restore"), false, false));
+archive.extract(ExtractOptions.DEFAULT.withTest(true));
+
+archive.repack("docs.zpaq", "otherkey",         // selected files into a new archive
+    ExtractOptions.DEFAULT.withRead(ReadOptions.LATEST.withSelect(n -> n.startsWith("/home/me/docs/"))));
+archive.copy("plain.zpaq", null, false);        // the whole archive, decrypted
+archive.writeIndex("home.idx", false, ReadOptions.LATEST);
 ```
 
-Behaviour worth knowing:
-
-* **Updates are transactions.** Files are compressed while they are added (in background threads); the
-  version exists once `commit()` returns. Closing an update without committing, or a failure while
-  adding (a stream that throws, a storage that fails), leaves the archive as it was. An update that
-  changes nothing writes nothing.
-* **Updates only touch what they name.** Unlike `zpaq add`, entries the update does not mention are kept.
-  `addTree(dir, name)` makes the archive under `name` like `dir` (it deletes entries of files that are gone
-  there) and fails if `dir` does not exist instead of deleting everything.
-* **Contents are verified.** Every fragment read through `ArchiveReader` is checked against its SHA-1;
-  a damaged one makes the stream throw. Extraction reports damaged files in `ExtractResult.problems()`
-  and extracts the rest.
-* **Extraction is confined.** Names are extracted under the target directory (a leading `/` or drive
-  letter is dropped); names with `..` components are not extracted.
-* **Errors** are `IOException`s: `NoSuchFileException` for a missing archive or file,
-  `ArchiveException` for archives that are damaged, not archives, or have another password.
-  `UnsupportedStorageException` (unchecked) when the storage cannot do what the format needs.
-* **Byte for byte.** The library writes the same archives as the command line, which writes the same
-  archives as zpaq 7.15.
-* **File names** must be valid UTF-8 and, to name local files that are not ASCII, the JVM must run in a
-  UTF-8 locale (see the command line notes). Streams in and out have no such limit.
-
-The engine package (`io.github.scf37.jpaq.engine`) is exported only to the command line module; the
-public API is the package `io.github.scf37.jpaq` (module `io.github.scf37.jpaq`).
+* **Names** are '/' separated, directories end with '/'. Which entries an operation sees, how local
+  names map to archive names (`AddOptions.archiveName`) and archive names to output names
+  (`ExtractOptions.output`, returning null skips) are plain predicates and functions: the command
+  line implements zpaq's `files`, `-only`, `-not` and `-to` with them. Names that are not valid UTF-8
+  survive the round trip (see `Names`).
+* **Updates** (`AddOptions`): the `files` are scanned (`prune`: not looked at, `accept`: added), new files
+  and files whose date or size changed are added (`force`: all), and entries in the update's `scope`
+  whose local file is gone are deleted (by default the scope is the archive names of `files`). Also:
+  method (0..5, `x…`, streaming `s…`, index-only `i…`), fragment size, attributes, the update date,
+  rolling back to an earlier version first, classic multi-part archives with an index, and the
+  sequential format. A failed update leaves the archive as it was.
+* **Reading** (`ReadOptions`): a version (number, negative from the end, or date), every version of
+  every file (`versionDigits`, zpaq's `-all`), a selection, the file list from an index.
+  `ArchiveContents` has the entries with their fragments, the versions, the fragment table, and
+  `sameContent(entry, localFile)` to compare with local files; `LocalFiles.scan` shows the local side
+  as an update sees it.
+* **Events** (`Event`, to the listener) are the progress and problems of an operation as data
+  (`FileAdded`, `FileExtracted`, `Progress`, `FileError`, `BlockSkipped`, `ExtractFailed`, ...); the
+  command line prints them as zpaq does. Results (`AddResult`, `ExtractResult`) count what was done and
+  what failed.
+* **Errors** are `IOException`s: `ArchiveException` for archives that are damaged, not archives, have
+  another password, or don't fit the operation; `UnsupportedStorageException` (unchecked) when the
+  storage cannot do what the format needs.
+* **Parallel**: nothing is global; operations on different archives run in parallel.
 
 ### Storage and the sequential format
 
@@ -168,14 +165,13 @@ interprets the reason. `LocalFsStorage` (all capabilities) is what the command l
 ```java
 Storage s3 = new ShellStorage("aws s3 cp \"s3://bkp/$1\" -", "aws s3 cp - \"s3://bkp/$1\"", "aws s3 rm \"s3://bkp/$1\"");
 ZpaqArchive a = ZpaqArchive.of(s3, "home???.jpaq").withFormat(Format.SEQUENTIAL).withKey(key);
-try (ArchiveUpdate u = a.update(UpdateOptions.DEFAULT.withIndex("index-41.jpaq").withIndexOut("index-42.jpaq"))) {
-  u.addTree(home, "home");
-  u.commit();                    // writes home042.jpaq, then index-42.jpaq; index-41.jpaq is not touched
-}
-try (ArchiveReader r = a.read(ReadOptions.LATEST.withIndex("index-42.jpaq"))) { ... }
+a.add(AddOptions.of("/home").withIndex("index-41.jpaq").withIndexOut("index-42.jpaq"));
+// home042.jpaq is written, then index-42.jpaq; index-41.jpaq is not touched
+a.extract(ExtractOptions.DEFAULT.withRead(ReadOptions.LATEST.withIndex("index-42.jpaq")));
 ```
 
-The jpaq command line reads both formats and any file extension; it writes the classic format.
+The command line lists, tests and extracts jpaq archives (any file extension) but does not modify them:
+it writes the classic format only.
 
 ## Compression library
 
@@ -228,10 +224,9 @@ The port was verified against the C++ implementation compiled from [`cpp/`](cpp)
   methods with the SHA-256 of the C++ output (`libzpaq/src/test/resources/golden`); `cli` runs
   scenarios (all levels, updates, deletions, `-all`/`-until`, streaming, multi-part, index,
   encrypted, repack, listings, extraction) and compares archive hashes, listing output and the
-  extracted trees with values recorded from the C++ program (`cli/src/test/resources`), and checks
-  that the archive library writes the same bytes as the command line; `lib` tests the library API
-  (streams, versions, abandoned and failed updates, damaged archives, the sequential format on
-  stream-only storage, parallel use).
+  extracted trees with values recorded from the C++ program (`cli/src/test/resources`), ; `lib` tests the
+  library API (versions, names and filters, rollback, repack, indexes, failed updates, damaged
+  archives, the sequential format on stream-only storage, parallel use).
 * **Differential tests** (`tools/difftest`): run both programs on the same inputs and compare
   the archives, the console output, exit codes and the files and attributes they extract. This
   includes a random-tree fuzzer over methods, options and update sequences.

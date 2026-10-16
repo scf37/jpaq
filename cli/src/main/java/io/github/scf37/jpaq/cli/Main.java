@@ -1,13 +1,6 @@
 package io.github.scf37.jpaq.cli;
 
-import io.github.scf37.jpaq.ErrorLine;
-import io.github.scf37.jpaq.Format;
-import io.github.scf37.jpaq.InfoLine;
-import io.github.scf37.jpaq.Line;
-import io.github.scf37.jpaq.LocalFsStorage;
-import io.github.scf37.jpaq.engine.Ctx;
-import io.github.scf37.jpaq.engine.Jidac;
-import io.github.scf37.jpaq.engine.Strs;
+import io.github.scf37.jpaq.ArchiveException;
 import java.io.BufferedOutputStream;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
@@ -39,7 +32,7 @@ public final class Main {
         }
       }
     }
-    for (int i = 0; i < args.length; i++) r[i + 1] = raw != null ? raw[i] : Strs.toBytes(args[i]);
+    for (int i = 0; i < args.length; i++) r[i + 1] = raw != null ? raw[i] : Text.bytes(args[i]);
     return r;
   }
 
@@ -81,26 +74,12 @@ public final class Main {
     return null;
   }
 
-  /**
-   * Prints lines like the C++ program: stdout buffered, stderr after flushing stdout. Text is
-   * byte strings, written unchanged as ISO-8859-1.
-   */
-  private record ConsoleSink(PrintStream out, PrintStream err) implements Ctx.Sink {
-    @Override
-    public void emit(Line line) {
-      if (line.channel() == Line.Channel.STDOUT) {
-        out.print(line.text());
-      } else {
-        out.flush();
-        err.print(line.text());
-        err.flush();
-      }
-    }
-
-    @Override
-    public void flush() {
-      out.flush();
-    }
+  /** The message of a failure as the C++ program prints it (e.what()). */
+  private static String what(Throwable e) {
+    if (e instanceof OutOfMemoryError) return "std::bad_alloc";
+    if (e instanceof ArchiveException || e instanceof CommandLine.Fatal) return e.getMessage();
+    if (e instanceof IOException) return e.toString();
+    return e.getMessage() != null ? e.getMessage() : e.toString();
   }
 
   /**
@@ -110,23 +89,22 @@ public final class Main {
    * code: 0 OK, 1 warnings, 2 errors.
    */
   static int run(String[] argv, Path workDir, Instant clock, PrintStream out, PrintStream err) {
-    Ctx ctx = new Ctx(new ConsoleSink(out, err), workDir, clock);
+    final long start = System.currentTimeMillis();
+    Console console = new Console(out, err);
     int errorcode;
     try {
-      Jidac jidac = new Jidac(ctx, new LocalFsStorage(workDir), Format.CLASSIC);
-      errorcode = CommandLine.run(ctx, jidac, argv);
+      errorcode = CommandLine.run(console, workDir, clock, argv);
     } catch (ExitException e) {
-      ctx.flush();
+      console.flush();
       return e.code;
-    } catch (RuntimeException | OutOfMemoryError e) {
-      ctx.emit(new ErrorLine.Fatal(Jidac.what(e), e, "zpaq error: " + Jidac.what(e) + "\n"));
+    } catch (IOException | RuntimeException | OutOfMemoryError e) {
+      console.eprint("zpaq error: " + Text.bytes(what(e)) + "\n");
       errorcode = 2;
     }
-    ctx.flush();
-    final double seconds = ctx.elapsedMillis() / 1000.0;
-    ctx.emit(new InfoLine.Finished(errorcode, seconds,
-        String.format(java.util.Locale.ROOT, "%1.3f seconds %s\n", seconds,
-            errorcode > 1 ? "(with errors)" : errorcode > 0 ? "(with warnings)" : "(all OK)")));
+    console.flush();
+    final double seconds = (System.currentTimeMillis() - start) / 1000.0;
+    console.eprint(String.format(java.util.Locale.ROOT, "%1.3f seconds %s\n", seconds,
+        errorcode > 1 ? "(with errors)" : errorcode > 0 ? "(with warnings)" : "(all OK)"));
     return errorcode;
   }
 
@@ -134,7 +112,7 @@ public final class Main {
   static int run(Path workDir, Instant clock, PrintStream out, PrintStream err, String... args) {
     String[] r = new String[args.length + 1];
     r[0] = "zpaq";
-    for (int i = 0; i < args.length; i++) r[i + 1] = Strs.toBytes(args[i]);
+    for (int i = 0; i < args.length; i++) r[i + 1] = Text.bytes(args[i]);
     return run(r, workDir, clock, out, err);
   }
 

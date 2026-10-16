@@ -1,32 +1,132 @@
 package io.github.scf37.jpaq.cli;
 
-import io.github.scf37.jpaq.InfoLine;
-import io.github.scf37.jpaq.engine.Ctx;
-import io.github.scf37.jpaq.engine.Dates;
-import io.github.scf37.jpaq.engine.Jidac;
-import io.github.scf37.jpaq.engine.Strs;
+import static io.github.scf37.jpaq.cli.Text.bytes;
+import static io.github.scf37.jpaq.cli.Text.text;
 
-/** The zpaq 7.15 command line: parses the arguments into the options of a {@link Jidac}. */
+import io.github.scf37.jpaq.AddOptions;
+import io.github.scf37.jpaq.ExtractOptions;
+import io.github.scf37.jpaq.LocalFsStorage;
+import io.github.scf37.jpaq.ReadOptions;
+import io.github.scf37.jpaq.ZpaqArchive;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+
+/** The zpaq 7.15 command line on top of the archive library. */
 final class CommandLine {
   private CommandLine() {}
+
+  static final String ZPAQ_VERSION = "7.15";
+
+  /** A failure of the command line itself (the C++ error() before any archive is touched). */
+  static final class Fatal extends RuntimeException {
+    private static final long serialVersionUID = 1L;
+
+    Fatal(String message) {
+      super(message);
+    }
+  }
 
   /**
    * Parses the command line and executes the command. Arguments are byte strings, argv[0] is the
    * program name. Returns 0 OK, 1 warnings; throws {@link ExitException} after printing the usage.
    */
-  static int run(Ctx ctx, Jidac j, String[] argv) {
-    ctx.emit(new InfoLine.Banner(Jidac.ZPAQ_VERSION,
-        "zpaq v" + Jidac.ZPAQ_VERSION + " journaling archiver, Java port\n"));
-    j.date = ctx.now();
-    parse(ctx, j, argv);
-    j.prepare();
-    if (!j.hasCommand()) usage(ctx, j);
-    return j.execute();
+  static int run(Console out, Path workDir, Instant clock, String[] argv) throws IOException {
+    out.print("zpaq v" + ZPAQ_VERSION + " journaling archiver, Java port\n");
+    Args a = new Args();
+    a.date = decimal(clock != null ? clock : Instant.now());
+    parse(out, a, argv);
+    out.summary = a.summary;
+
+    // Set threads
+    if (a.threads < 1) a.threads = Math.max(Runtime.getRuntime().availableProcessors(), 1);
+
+    // Test date
+    if (a.date < 19000000000000L || a.date > 30000000000000L)
+      throw new Fatal("date is incorrect, use -until YYYY-MM-DD HH:MM:SS to set");
+
+    if (!((a.command == 'a' && a.files.size() > 0) || a.command == 'x' || a.command == 'l'))
+      usage(out, a);
+
+    ZpaqArchive archive = ZpaqArchive.of(new LocalFsStorage(workDir), text(a.archive))
+        .withKey(a.key != null ? text(a.key) : null).withThreads(a.threads)
+        .withDirectory(workDir).withClock(Clock.fixed(instant(a.date), ZoneOffset.UTC))
+        .withListener(out);
+    return switch (a.command) {
+      case 'a' -> add(a, archive);
+      case 'x' -> extract(a, archive);
+      default -> new Lister(a, out, workDir).list(archive);
+    };
+  }
+
+  /** The version or date of -until, applied to read options. */
+  static ReadOptions until(ReadOptions o, long version) {
+    if (version > 9999999) return o.withDate(instant(version));
+    return o.withVersion(version);
+  }
+
+  private static int add(Args a, ZpaqArchive archive) throws IOException {
+    AddOptions o = new AddOptions(a.files.stream().map(Text::text).toList(),
+        n -> text(a.rename(bytes(n))),         // -to
+        n -> a.excluded(bytes(n)),             // -not: not even scanned
+        n -> a.isselected(bytes(n), false),    // files, -only, -not
+        n -> a.isselected(bytes(n), true),     // what the update is about in the archive
+        a.method, a.fragment, a.force, a.noattributes,
+        a.index != null ? text(a.index) : null, null, instant(a.date), null, null);
+    if (a.version != Args.DEFAULT_VERSION) {
+      o = a.version > 9999999 ? o.withRollbackDate(instant(a.version))
+          : o.withRollbackVersion(a.version);
+    }
+    return archive.add(o).unreadable() > 0 ? 1 : 0;
+  }
+
+  private static int extract(Args a, ZpaqArchive archive) throws IOException {
+    // Copy the whole archive, encrypted or decrypted
+    if (a.repack != null && a.all != 0) {
+      if (a.files.size() > 0 || a.tofiles.size() > 0 || a.onlyfiles.size() > 0 || a.noattributes
+          || a.version != Args.DEFAULT_VERSION || !a.method.isEmpty())
+        throw new Fatal("-repack -all does not allow partial copy");
+      archive.copy(text(a.repack), a.newKey != null ? text(a.newKey) : null, a.force);
+      return 0;
+    }
+    ReadOptions ro = ReadOptions.LATEST.withVersionDigits(a.all)
+        .withSelect(n -> a.isselected(bytes(n), false)).withNoAttributes(a.noattributes);
+    if (a.version != Args.DEFAULT_VERSION) ro = until(ro, a.version);
+    if (a.index != null) {
+      archive.writeIndex(text(a.index), a.force, ro);
+      return 0;
+    }
+    ExtractOptions o = new ExtractOptions(ro, n -> text(a.rename(bytes(n))), a.force, a.dotest);
+    if (a.repack != null) {
+      archive.repack(text(a.repack), a.newKey != null ? text(a.newKey) : null, o);
+      return 0;
+    }
+    return archive.extract(o).failed() > 0 ? 1 : 0;
+  }
+
+  /** Decimal date YYYYMMDDHHMMSS (UT) of an instant. */
+  static long decimal(Instant i) {
+    ZonedDateTime t = i.atZone(ZoneOffset.UTC);
+    return t.getYear() * 10000000000L + t.getMonthValue() * 100000000L
+        + t.getDayOfMonth() * 1000000L + t.getHour() * 10000L + t.getMinute() * 100L
+        + t.getSecond();
+  }
+
+  /** The instant of a decimal date (fields out of range carry over). */
+  static Instant instant(long d) {
+    return LocalDateTime.of((int) (d / 10000000000L), 1, 1, 0, 0)
+        .plusMonths(d / 100000000 % 100 - 1).plusDays(d / 1000000 % 100 - 1)
+        .plusHours(d / 10000 % 100).plusMinutes(d / 100 % 100).plusSeconds(d % 100)
+        .toInstant(ZoneOffset.UTC);
   }
 
   /** Prints the help message and exits. */
-  private static void usage(Ctx ctx, Jidac j) {
-    ctx.print(String.format(java.util.Locale.ROOT, """
+  private static void usage(Console out, Args a) {
+    out.print(String.format(java.util.Locale.ROOT, """
         Usage: zpaq command archive[.zpaq] files... -options...
         Files... may be directory trees. Default is the whole archive.
         Use * or ???? in archive name for multi-part or "" for empty.
@@ -55,92 +155,91 @@ final class CommandLine {
           -to out...      Rename files... to out... or all to out/all.
           -until N        Roll back archive to N'th update or -N from end.
           -until %s  Set date, roll back (UT, default time: 235959).
-        """, j.threads, Dates.dateToString(j.date)));
+        """, a.threads, Text.dateToString(a.date)));
     throw new ExitException(1);
   }
 
-  private static void parse(Ctx ctx, Jidac j, String[] argv) {
+  private static void parse(Console out, Args a, String[] argv) {
     final int argc = argv.length;
     for (int i = 1; i < argc; ++i) {
       final String opt = argv[i];  // read command
       if ((opt.equals("add") || opt.equals("extract") || opt.equals("list") || opt.equals("convert")
           || opt.equals("a") || opt.equals("x") || opt.equals("l") || opt.equals("c"))
-          && i < argc - 1 && Strs.at(argv[i + 1], 0) != '-' && j.command == 0) {
-        j.command = opt.charAt(0);
-        if (opt.equals("extract")) j.command = 'x';
-        j.archive = argv[++i];  // append ".zpaq" to archive if no extension
+          && i < argc - 1 && Text.at(argv[i + 1], 0) != '-' && a.command == 0) {
+        a.command = opt.charAt(0);
+        if (opt.equals("extract")) a.command = 'x';
+        a.archive = argv[++i];  // append ".zpaq" to archive if no extension
         int slash = argv[i].lastIndexOf('/');
         int dot = argv[i].lastIndexOf('.');
         if (slash >= 0 && dot < slash) dot = -1;
-        if (dot < 0 && !j.archive.isEmpty()) j.archive += ".zpaq";
-        while (++i < argc && Strs.at(argv[i], 0) != '-')  // read filename args
-          j.files.add(argv[i]);
+        if (dot < 0 && !a.archive.isEmpty()) a.archive += ".zpaq";
+        while (++i < argc && Text.at(argv[i], 0) != '-')  // read filename args
+          a.files.add(argv[i]);
         --i;
       } else if (opt.length() < 2 || opt.charAt(0) != '-') {
-        usage(ctx, j);
+        usage(out, a);
       } else if (opt.equals("-all")) {
-        j.all = 4;
-        if (i < argc - 1 && Strs.isdigit(Strs.at(argv[i + 1], 0))) j.all = Strs.atoi(argv[++i]);
+        a.all = 4;
+        if (i < argc - 1 && Text.isdigit(Text.at(argv[i + 1], 0))) a.all = Text.atoi(argv[++i]);
       } else if (opt.equals("-force") || opt.equals("-f")) {
-        j.force = true;
+        a.force = true;
       } else if (opt.equals("-fragment") && i < argc - 1) {
-        j.fragment = Strs.atoi(argv[++i]);
+        a.fragment = Text.atoi(argv[++i]);
       } else if (opt.equals("-index") && i < argc - 1) {
-        j.index = argv[++i];
+        a.index = argv[++i];
       } else if (opt.equals("-key") && i < argc - 1) {
-        j.password = Jidac.hashPassword(argv[++i]);
+        a.key = argv[++i];
       } else if (opt.equals("-method") && i < argc - 1) {
-        j.method = argv[++i];
+        a.method = argv[++i];
       } else if (opt.charAt(1) == 'm') {
-        j.method = argv[i].substring(2);
+        a.method = argv[i].substring(2);
       } else if (opt.equals("-noattributes")) {
-        j.noattributes = true;
+        a.noattributes = true;
       } else if (opt.equals("-not")) {  // read notfiles
-        while (++i < argc && Strs.at(argv[i], 0) != '-') {
-          if (Strs.at(argv[i], 0) == '=') j.nottype = argv[i];
-          else j.notfiles.add(argv[i]);
+        while (++i < argc && Text.at(argv[i], 0) != '-') {
+          if (Text.at(argv[i], 0) == '=') a.nottype = argv[i];
+          else a.notfiles.add(argv[i]);
         }
         --i;
       } else if (opt.equals("-only")) {  // read onlyfiles
-        while (++i < argc && Strs.at(argv[i], 0) != '-') j.onlyfiles.add(argv[i]);
+        while (++i < argc && Text.at(argv[i], 0) != '-') a.onlyfiles.add(argv[i]);
         --i;
       } else if (opt.equals("-repack") && i < argc - 1) {
-        j.repack = argv[++i];
-        if (i < argc - 1 && Strs.at(argv[i + 1], 0) != '-')
-          j.newPassword = Jidac.hashPassword(argv[++i]);
+        a.repack = argv[++i];
+        if (i < argc - 1 && Text.at(argv[i + 1], 0) != '-') a.newKey = argv[++i];
       } else if (opt.equals("-summary") && i < argc - 1) {
-        j.summary = Strs.atoi(argv[++i]);
+        a.summary = Text.atoi(argv[++i]);
       } else if (opt.charAt(1) == 's') {
-        j.summary = Strs.atoi(argv[i], 2);
+        a.summary = Text.atoi(argv[i], 2);
       } else if (opt.equals("-test")) {
-        j.dotest = true;
+        a.dotest = true;
       } else if (opt.equals("-to")) {  // read tofiles
-        while (++i < argc && Strs.at(argv[i], 0) != '-') j.tofiles.add(argv[i]);
-        if (j.tofiles.size() == 0) j.tofiles.add("");
+        while (++i < argc && Text.at(argv[i], 0) != '-') a.tofiles.add(argv[i]);
+        if (a.tofiles.size() == 0) a.tofiles.add("");
         --i;
       } else if (opt.equals("-threads") && i < argc - 1) {
-        j.threads = Strs.atoi(argv[++i]);
+        a.threads = Text.atoi(argv[++i]);
       } else if (opt.charAt(1) == 't') {
-        j.threads = Strs.atoi(argv[i], 2);
+        a.threads = Text.atoi(argv[i], 2);
       } else if (opt.equals("-until") && i + 1 < argc) {  // read date
 
         // Read digits from multiple args and fill in leading zeros
         long version = 0;
         int digits = 0;
-        if (Strs.at(argv[i + 1], 0) == '-') {  // negative version
-          version = Strs.atol(argv[i + 1]);
-          if (version > -1) usage(ctx, j);
+        if (Text.at(argv[i + 1], 0) == '-') {  // negative version
+          version = Text.atol(argv[i + 1]);
+          if (version > -1) usage(out, a);
           ++i;
         } else {  // positive version or date
-          while (++i < argc && Strs.at(argv[i], 0) != '-') {
+          while (++i < argc && Text.at(argv[i], 0) != '-') {
             for (int k = 0; ; ++k) {
-              if (Strs.isdigit(Strs.at(argv[i], k))) {
-                version = version * 10 + Strs.at(argv[i], k) - '0';
+              if (Text.isdigit(Text.at(argv[i], k))) {
+                version = version * 10 + Text.at(argv[i], k) - '0';
                 ++digits;
               } else {
                 if (digits == 1) version = version / 10 * 100 + version % 10;
                 digits = 0;
-                if (Strs.at(argv[i], k) == 0) break;
+                if (Text.at(argv[i], k) == 0) break;
               }
             }
           }
@@ -153,16 +252,16 @@ final class CommandLine {
         if (version >= 190000000000L && version <= 299912312359L) version = version * 100 + 59;
         if (version > 9999999) {
           if (version < 19000101000000L || version > 29991231235959L) {
-            ctx.eprint(String.format(java.util.Locale.ROOT,
+            out.eprint(String.format(java.util.Locale.ROOT,
                 "Version date %1.0f must be 19000101000000 to 29991231235959\n", (double) version));
             throw new ExitException(1);
           }
-          j.date = version;
+          a.date = version;
         }
-        j.version = version;
+        a.version = version;
       } else {
-        ctx.print("Unknown option ignored: " + argv[i] + "\n");
-        usage(ctx, j);
+        out.print("Unknown option ignored: " + argv[i] + "\n");
+        usage(out, a);
       }
     }
   }
