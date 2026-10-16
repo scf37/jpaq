@@ -37,7 +37,7 @@ An update writes the tome, closes it (the commit of the upload), and only then w
 caller keeps the previous index until the new one is stored:
 
 * the index is never written under the name of an older one: an update with
-  `UpdateOptions.DEFAULT.withIndex("idx-41").withIndexOut("idx-42")` reads the old index, copies it and appends the new segment under the new name;
+  `AddOptions.withIndex("idx-41").withIndexOut("idx-42")` reads the old index, copies it and appends the new segment under the new name;
 * a tome that was uploaded but is not in any index (failed upload, crash before the index) is an orphan:
   it is ignored and overwritten by the next update, which gets the same name (the tome number is the number
   of versions in the index + 1);

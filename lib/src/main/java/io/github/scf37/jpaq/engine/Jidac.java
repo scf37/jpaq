@@ -1,8 +1,11 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.ErrorLine;
+import io.github.scf37.jpaq.ArchiveEntry;
+import io.github.scf37.jpaq.ArchiveVersion;
+import io.github.scf37.jpaq.Attributes;
+import io.github.scf37.jpaq.Event;
+import io.github.scf37.jpaq.LocalFile;
 import io.github.scf37.jpaq.Format;
-import io.github.scf37.jpaq.InfoLine;
 import io.github.scf37.jpaq.Storage;
 import io.github.scf37.jpaq.libzpaq.Decompresser;
 import io.github.scf37.jpaq.libzpaq.Dialect;
@@ -14,6 +17,8 @@ import io.github.scf37.jpaq.libzpaq.ZpaqWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 
 /**
  * A Jidac object represents an archive contents: a list of file fragments with hash, size, and
@@ -26,28 +31,38 @@ public final class Jidac {
   /** Unless -until. */
   public static final long DEFAULT_VERSION = 99999999999999L;
 
-  // Options (the command line arguments). Text is byte strings (see Strs).
-  public char command;                      // command 'a', 'x', or 'l'
+  // Options. Text is byte strings (see Strs).
+  public char command;                      // 'a' add, 'x' extract, 'l' read the file list
   public String archive = "";               // archive name
-  public List<String> files = new ArrayList<>();  // filename args
-  public int all;                           // -all option
-  public boolean force;                     // -force option
-  public int fragment = 6;                  // -fragment option
-  public String index;                      // index option
-  public byte[] password;                   // hash of -key argument or null
+  public int all;                           // read every version, in directories of n digits
+  public boolean force;                     // add: also unchanged files; extract: overwrite
+  public int fragment = 6;                  // average fragment size 2^n KiB
+  public String index;                      // add: remote archive index; extract: index to write
+  public byte[] password;                   // hash of the key or null
   public String method = "";                // default "1"
-  public boolean noattributes;              // -noattributes option
-  public List<String> notfiles = new ArrayList<>();   // list of prefixes to exclude
-  public String nottype = "";               // -not =...
-  public List<String> onlyfiles = new ArrayList<>();  // list of prefixes to include
-  public String repack;                     // -repack output file
-  public byte[] newPassword;                // -repack hashed password
-  public int summary;                       // summary option if > 0, detailed if -1
-  public boolean dotest;                    // -test option
+  public boolean noattributes;              // don't store or restore attributes
+  public String repack;                     // extract: write the selected files to this archive
+  public byte[] newPassword;                // its key hash
+  public boolean dotest;                    // extract: verify, write no files
   public int threads;                       // default is number of cores
-  public List<String> tofiles = new ArrayList<>();    // -to option
   public long date;                         // now as decimal YYYYMMDDHHMMSS (UT)
   public long version = DEFAULT_VERSION;    // version number or 14 digit date
+
+  /** After add: files that could not be read; after extract: files not extracted completely. */
+  public int errors;
+
+  /** Archive names to read (with the version directory with -all); others are not loaded. */
+  public Predicate<String> select = n -> true;
+  /** Add: local files and directories to add. */
+  public List<String> roots = new ArrayList<>();
+  /** Add: local name -> archive name. */
+  public UnaryOperator<String> toArchive = UnaryOperator.identity();
+  /** Add: local names not looked at (directories not entered). */
+  public Predicate<String> prune = n -> false;
+  /** Add: local names to add. */
+  public Predicate<String> accept = n -> true;
+  /** Extract, repack: archive name -> output name (local file, or name in the new archive). */
+  public UnaryOperator<String> toOutput = UnaryOperator.identity();
 
   // Archive state
   long dhsize;                       // total size of D blocks according to H blocks
@@ -58,8 +73,6 @@ public final class Jidac {
   List<Block> block = new ArrayList<>();       // list of data blocks to extract
   List<Ver> ver = new ArrayList<>();           // version info
 
-  private static final InfoLine INCOMPLETE =
-      new InfoLine.IncompleteTransaction("Incomplete transaction ignored\n");
 
   /** Where output goes, file names are resolved, and the clock of this run. */
   public final Ctx ctx;
@@ -68,7 +81,6 @@ public final class Jidac {
   Format format;                     // format written by add
   public String indexOut;            // sequential format: name of the updated index to write
   public String readIndex;           // extract/list: read the file list from this index instead
-  public boolean safeNames;          // extract: skip names that would leave the output directory
   Dialect readDialect;               // block magic of the archive last read, null if none
   long virtualEnd;                   // end of the last archive read, counting D blocks of an index
 
@@ -109,42 +121,6 @@ public final class Jidac {
     }
   }
 
-  /** In Windows converts upper case to lower case (identity on other systems). */
-  private static int tolowerW(int c) {
-    if (Fs.WINDOWS && c >= 'A' && c <= 'Z') return c - 'A' + 'a';
-    return c;
-  }
-
-  /**
-   * Returns true if strings a == b or a+"/" is a prefix of b or a ends in "/" and is a prefix of
-   * b. Matches ? in a to any char in b. Matches * in a to any string in b. In Windows, not case
-   * sensitive.
-   */
-  static boolean ispath(String a, String b) {
-    return ispath(a, 0, b, 0);
-  }
-
-  private static boolean ispath(String a, int ai, String b, int bi) {
-    for (; Strs.at(a, ai) != 0; ++ai, ++bi) {
-      final int ca = tolowerW(Strs.at(a, ai));
-      final int cb = tolowerW(Strs.at(b, bi));
-      if (ca == '*') {
-        while (true) {
-          if (ispath(a, ai + 1, b, bi)) return true;
-          if (Strs.at(b, bi) == 0) return false;
-          ++bi;
-        }
-      } else if (ca == '?') {
-        if (Strs.at(b, bi) == 0) return false;
-      } else if (ca == cb && ca == '/' && Strs.at(a, ai + 1) == 0) {
-        return true;
-      } else if (ca != cb) {
-        return false;
-      }
-    }
-    return Strs.at(b, bi) == 0 || Strs.at(b, bi) == '/';
-  }
-
   /** Returns a/b such that there is exactly one "/" in between. */
   static String appendPath(String a, String b) {
     int na = a.length();
@@ -156,63 +132,6 @@ public final class Jidac {
     if (nb > 0 && b.charAt(0) == '/') b = b.substring(1);
     if (na > 0 && a.charAt(na - 1) == '/') a = a.substring(0, na - 1);
     return a + "/" + b;
-  }
-
-  /** Renames name using tofiles. */
-  String rename(String name) {
-    if (files.size() == 0 && tofiles.size() > 0) {  // append prefix tofiles[0]
-      name = appendPath(tofiles.get(0), name);
-    } else {  // replace prefix files[i] with tofiles[i]
-      final int n = name.length();
-      for (int i = 0; i < files.size() && i < tofiles.size(); ++i) {
-        final int fn = files.get(i).length();
-        if (fn <= n && files.get(i).equals(name.substring(0, fn)))
-          return tofiles.get(i) + name.substring(fn);
-      }
-    }
-    return name;
-  }
-
-  /** Tests whether filename is selected by files, -only, and -not. If rn then test renamed. */
-  boolean isselected(String filename, boolean rn) {
-    boolean matched = true;
-    if (files.size() > 0) {
-      matched = false;
-      for (int i = 0; i < files.size() && !matched; ++i) {
-        if (rn && i < tofiles.size()) {
-          if (ispath(tofiles.get(i), filename)) matched = true;
-        } else if (ispath(files.get(i), filename)) {
-          matched = true;
-        }
-      }
-    }
-    if (!matched) return false;
-    if (onlyfiles.size() > 0) {
-      matched = false;
-      for (int i = 0; i < onlyfiles.size() && !matched; ++i)
-        if (ispath(onlyfiles.get(i), filename)) matched = true;
-    }
-    if (!matched) return false;
-    for (String nf : notfiles) {
-      if (ispath(nf, filename)) return false;
-    }
-    return true;
-  }
-
-  /**
-   * True if the name, appended to an output directory, stays inside it: no ".." component (a
-   * leading "/" or drive letter is removed by {@link #appendPath}).
-   */
-  static boolean isSafeName(String name) {
-    int start = 0;
-    for (int i = 0; i <= name.length(); i++) {
-      if (i == name.length() || name.charAt(i) == '/' || name.charAt(i) == '\\') {
-        if (i - start == 2 && name.charAt(start) == '.' && name.charAt(start + 1) == '.')
-          return false;
-        start = i + 1;
-      }
-    }
-    return true;
   }
 
   /** Guesses the number of cores. */
@@ -240,11 +159,6 @@ public final class Jidac {
     return execute();
   }
 
-  /** True if the options name a command that {@link #execute} can run. */
-  public boolean hasCommand() {
-    return (command == 'a' && files.size() > 0) || command == 'x' || command == 'l';
-  }
-
   /** Completes the options: number of threads, date check, version counted from the end. */
   public void prepare() {
     // Set threads
@@ -261,16 +175,14 @@ public final class Jidac {
       jidac.version = DEFAULT_VERSION;
       jidac.readArchive(archive, null);
       version += jidac.ver.size() - 1;
-      ctx.emit(new InfoLine.VersionSelected(version,
-          String.format(java.util.Locale.ROOT, "Version %1.0f\n", version + .0)));
+      ctx.emit(new Event.VersionSelected(version));
     }
   }
 
   /** Runs the command after {@link #prepare}. */
   public int execute() {
-    if (command == 'a' && files.size() > 0) return new Adder(this).add();
+    if (command == 'a') return new Adder(this).add();
     else if (command == 'x') return new Extractor(this).extract();
-    else if (command == 'l') return new Lister(this).list();
     throw new IllegalStateException("no command");
   }
 
@@ -278,7 +190,6 @@ public final class Jidac {
   private void copyOptions(Jidac o) {
     command = o.command;
     archive = o.archive;
-    files = new ArrayList<>(o.files);
     all = o.all;
     force = o.force;
     fragment = o.fragment;
@@ -288,17 +199,92 @@ public final class Jidac {
     password = o.password;
     method = o.method;
     noattributes = o.noattributes;
-    notfiles = new ArrayList<>(o.notfiles);
-    nottype = o.nottype;
-    onlyfiles = new ArrayList<>(o.onlyfiles);
     repack = o.repack;
     newPassword = o.newPassword;
-    summary = o.summary;
     dotest = o.dotest;
     threads = o.threads;
-    tofiles = new ArrayList<>(o.tofiles);
     date = o.date;
     version = o.version;
+    select = o.select;
+    roots = o.roots;
+    toArchive = o.toArchive;
+    prune = o.prune;
+    accept = o.accept;
+    toOutput = o.toOutput;
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Contents, for the API
+
+  /** Reads the file list of the archive (or of readIndex) up to version. */
+  public void readContents() {
+    command = 'l';
+    prepare();
+    readArchive(fromIndex() ? readIndex : archive, null);
+  }
+
+  /** The entries read, in name order: present ones, or all with -all (deletions have date 0). */
+  public List<ArchiveEntry> entries() {
+    List<ArchiveEntry> r = new ArrayList<>();
+    for (DT p : dt.values()) {
+      if (p.date() == 0 && all == 0) continue;
+      int[] f = new int[p.ptrSize()];
+      for (int i = 0; i < f.length; i++) f[i] = p.ptr(i);
+      r.add(new ArchiveEntry(Strs.fromBytes(p.name()), p.date(), p.size(), new Attributes(p.attr()), f));
+    }
+    return r;
+  }
+
+  public List<ArchiveVersion> versions() {
+    List<ArchiveVersion> r = new ArrayList<>();
+    for (int i = 1; i < ver.size(); i++) {
+      Ver v = ver.get(i);
+      r.add(new ArchiveVersion(i, v.date, v.updates, v.deletes, v.offset, v.firstFragment));
+    }
+    return r;
+  }
+
+  /** Number of fragment IDs (fragment 0 is not used). */
+  public int fragmentCount() {
+    return ht.size();
+  }
+
+  /** Size of a fragment, -1 if unknown. */
+  public int fragmentSize(int id) {
+    return ht.usize(id);
+  }
+
+  /** End of the archive read, counting the data an index refers to. */
+  public long end() {
+    return virtualEnd;
+  }
+
+  /** Size of the data blocks according to the fragment tables. */
+  public long indexedDataSize() {
+    return dhsize;
+  }
+
+  /** Size of the data blocks in the files read (less than indexedDataSize for an index). */
+  public long storedDataSize() {
+    return dcsize;
+  }
+
+  /**
+   * True if the entry (byte string name) has the content of the local file, or neither exists;
+   * compares sizes and fragment hashes.
+   */
+  public boolean sameContent(String name, String localName) {
+    DT p = dt.get(name);
+    return p != null && new Extractor(this).equal(p, localName);
+  }
+
+  /** Scans the roots (pruned, accepted) and returns the local files and directories found. */
+  public List<LocalFile> scanLocal() {
+    for (String f : roots) scandir(f);
+    List<LocalFile> r = new ArrayList<>();
+    for (DT p : edt.values())
+      r.add(new LocalFile(Strs.fromBytes(p.name()), p.date(), p.size(), new Attributes(p.attr())));
+    return r;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -328,15 +314,12 @@ public final class Jidac {
     InputArchive in = new InputArchive(io, arc, password);
     if (!in.isOpen()) {
       if (command != 'a') {
-        ctx.emit(new ErrorLine.ArchiveNotFound(arc, arc + " not found.\n"));
+        ctx.emit(new Event.ArchiveNotFound(Ctx.t(arc)));
         if (errors != null) ++errors[0];
       }
       return 0;
     }
-    ctx.emit(new InfoLine.ArchiveReading(arc, version == DEFAULT_VERSION ? -1 : version,
-        arc + (version == DEFAULT_VERSION ? ": "
-            : String.format(java.util.Locale.ROOT, " -until %1.0f: ", version + 0.0))));
-    ctx.flush();
+    ctx.emit(new Event.ArchiveReading(Ctx.t(arc), version == DEFAULT_VERSION ? -1 : version));
 
     // Test password
     {
@@ -358,7 +341,6 @@ public final class Jidac {
     boolean foundData = false;  // exit if nothing found
     boolean first = true;       // first segment in archive?
     MemoryBuffer os = new MemoryBuffer(32832);  // decompressed block
-    final boolean renamed = command == 'l' || command == 'a';
 
     // Detect archive format and read the filenames, fragment sizes, and hashes. In JIDAC format,
     // these are in the index blocks, allowing data to be skipped. Otherwise the whole archive is
@@ -459,7 +441,7 @@ public final class Jidac {
                   final long skew = adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0;
                   dataOffset = dataOffsetReal + skew;
                   final long jmp = adia == Dialect.JPAQ ? 0 : btol(osd, 0);
-                  if (jmp < 0) ctx.emit(INCOMPLETE);
+                  if (jmp < 0) ctx.emit(new Event.IncompleteTransaction());
                   if (jmp < 0
                       || (version < 19000000000000L && (long) ver.size() > version)
                       || (version >= 19000000000000L && version < fdate)) {
@@ -475,10 +457,9 @@ public final class Jidac {
                     v.dataOffset = dataOffset;
                     v.date = v.lastdate = fdate;
                     v.csize = jmp;
-                    if (all != 0) {
+                    if (all != 0 && command == 'x') {  // version directory
                       String fn = Strs.itos(ver.size() - 1, all) + "/";
-                      if (renamed) fn = rename(fn);
-                      if (isselected(fn, false)) dtGet(fn).date(fdate);
+                      if (select.test(fn)) dtGet(fn).date(fdate);
                     }
                     if (jmp != 0) break endblock;
                   }
@@ -497,8 +478,9 @@ public final class Jidac {
                   s += 4;
                   dhsize += bsize;
                   if ((long) ht.size() > num) {
-                    ctx.eprintf("Unordered fragment tables: expected >= %d found %1.0f\n",
-                        ht.size(), (double) num);
+                    ctx.diagnostic(String.format(java.util.Locale.ROOT,
+                        "Unordered fragment tables: expected >= %d found %1.0f\n", ht.size(),
+                        (double) num));
                   }
                   for (int k = 0; k < n; ++k) {
                     if (k == 0) {
@@ -543,7 +525,7 @@ public final class Jidac {
                     if (len > 65535) throw ZpaqException.error("filename too long");
                     String fn = Strs.ofBytes(osd, s, len);  // filename renamed
                     if (all != 0) fn = appendPath(Strs.itos(ver.size() - 1, all), fn);
-                    final boolean issel = isselected(fn, renamed);
+                    final boolean issel = select.test(fn);
                     s += len + 1;  // skip filename
                     if (s > end) throw ZpaqException.error("filename too long");
                     if (fdt != 0) {
@@ -578,7 +560,7 @@ public final class Jidac {
                 } else if (btype == 'd' && adia == Dialect.JPAQ && ver.size() > 1) {
                   sawD = true;  // size is added to csize and dcsize below
                 } else {
-                  ctx.print("Skipping " + fname + " " + comment.s + "\n");
+                  ctx.note("Skipping " + fname + " " + comment.s + "\n");
                   throw ZpaqException.error("Unexpected journaling block");
                 }
               } else {
@@ -602,7 +584,7 @@ public final class Jidac {
                 skip = true;
                 String fn = lastfile;
                 if (all != 0) fn = appendPath(Strs.itos(ver.size() - 1, all), fn);
-                if (isselected(fn, renamed)) {
+                if (select.test(fn)) {
                   DT dtr = dtGet(fn);
                   if (filename.s.length() > 0 || first) {
                     ++nfiles;
@@ -630,9 +612,7 @@ public final class Jidac {
         }  // endblock
       } catch (RuntimeException | OutOfMemoryError e) {
         in.seek(-d.buffered(), InputArchive.Whence.CUR);
-        ctx.emit(new ErrorLine.BlockSkipped(blockOffset, what(e),
-            String.format(java.util.Locale.ROOT, "Skipping block at %1.0f: %s\n",
-                (double) blockOffset, what(e))));
+        ctx.emit(new Event.BlockSkipped(blockOffset, Ctx.t(what(e))));
         if (errors != null) ++errors[0];
       }
     }  // end while !done
@@ -643,7 +623,7 @@ public final class Jidac {
       // A transaction that never got its file list was not committed
       Ver lv = ver.get(ver.size() - 1);
       if (lv.updates + lv.deletes == 0) {
-        ctx.emit(INCOMPLETE);
+        ctx.emit(new Event.IncompleteTransaction());
         ver.remove(ver.size() - 1);
         ht.truncate(lv.firstFragment);
         while (block.size() > 0 && block.get(block.size() - 1).start >= lv.firstFragment)
@@ -652,10 +632,7 @@ public final class Jidac {
     }
     readDialect = adia;
     virtualEnd = blockOffset + (adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0);
-    ctx.emit(new InfoLine.ArchiveRead(ver.size() - 1, nfiles, ht.size() - 1,
-        blockOffset / 1000000.0,
-        String.format(java.util.Locale.ROOT, "%d versions, %d files, %d fragments, %1.6f MB\n",
-            ver.size() - 1, nfiles, ht.size() - 1, blockOffset / 1000000.0)));
+    ctx.emit(new Event.ArchiveRead(ver.size() - 1, nfiles, ht.size() - 1, blockOffset));
 
     // Calculate file sizes
     for (DT p : dt.unordered()) {
@@ -717,14 +694,13 @@ public final class Jidac {
   // Scanning external files
 
   /**
-   * Inserts the external filename (UTF-8 byte string with "/") into edt if selected by files,
-   * onlyfiles, and notfiles. If filename is a directory then also inserts its contents.
+   * Inserts the external filename (UTF-8 byte string with "/") into edt unless pruned and if
+   * accepted. If filename is a directory (and not pruned) then also inserts its contents.
    */
   void scandir(String filename) {
 
-    // Don't scan directories excluded by -not
-    for (String nf : notfiles)
-      if (ispath(nf, filename)) return;
+    // Don't scan what is excluded (directories excluded are not entered)
+    if (prune.test(filename)) return;
 
     // Add regular files and directories
     while (filename.length() > 1 && filename.charAt(filename.length() - 1) == '/')
@@ -761,7 +737,7 @@ public final class Jidac {
 
   /** Adds an external file and its date, size, and attributes to edt. */
   void addfile(String filename, long edate, long esize, long eattr) {
-    if (!isselected(filename, false)) return;
+    if (!accept.test(filename)) return;
     DT d = edtGet(filename);
     d.date(edate);
     d.size(esize);

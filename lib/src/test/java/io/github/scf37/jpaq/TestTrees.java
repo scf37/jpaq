@@ -3,7 +3,6 @@ package io.github.scf37.jpaq;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import java.io.InputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,12 +47,6 @@ public final class TestTrees {
   public static List<Path> files(Path dir) throws IOException {
     try (Stream<Path> s = Files.walk(dir)) {
       return s.filter(Files::isRegularFile).map(dir::relativize).sorted().toList();
-    }
-  }
-
-  public static byte[] readAll(InputStream in) throws IOException {
-    try (in) {
-      return in.readAllBytes();
     }
   }
 

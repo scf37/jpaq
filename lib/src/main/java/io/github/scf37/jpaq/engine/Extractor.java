@@ -1,7 +1,6 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.ErrorLine;
-import io.github.scf37.jpaq.InfoLine;
+import io.github.scf37.jpaq.Event;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.Decompresser;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
@@ -153,9 +152,6 @@ final class Extractor {
 
     // Encrypt or decrypt whole archive
     if (j.repack != null && j.all != 0) {
-      if (j.files.size() > 0 || j.tofiles.size() > 0 || j.onlyfiles.size() > 0 || j.noattributes
-          || j.version != Jidac.DEFAULT_VERSION || !j.method.isEmpty())
-        throw ZpaqException.error("-repack -all does not allow partial copy");
       InputArchive in = j.openArchive();
       j.io.checkWritable();
       if (j.force) j.io.delete(j.repack);
@@ -168,8 +164,7 @@ final class Extractor {
       // Copy
       OutputArchive out = new OutputArchive(j.io, j.repack, j.newPassword, salt, 0);
       copy(in, out);
-      j.ctx.print(j.archive + String.format(java.util.Locale.ROOT, " %1.0f ", in.tell() + .0)
-          + j.repack + String.format(java.util.Locale.ROOT, " -> %1.0f\n", out.tell() + .0));
+      j.ctx.emit(new Event.ArchiveCopied(Ctx.t(j.archive), in.tell(), Ctx.t(j.repack), out.tell()));
       out.close();
       in.close();
       return 0;
@@ -208,25 +203,15 @@ final class Extractor {
     for (DT p : j.dt.values()) {
       p.data(-1);  // skip
       if (p.date() != 0 && !p.name().isEmpty()) {
-        if (j.safeNames && !Jidac.isSafeName(p.name())) {
-          j.ctx.emit(new ErrorLine.FileError(p.name(), "name leaves the output directory", null,
-              p.name() + ": name leaves the output directory, skipped\n"));
-          continue;
-        }
-        final String fn = j.rename(p.name());
+        final String fn = j.toOutput.apply(p.name());
+        if (fn == null) continue;  // not wanted
         final boolean isdir = p.name().charAt(p.name().length() - 1) == '/';
         if (j.repack == null && !j.dotest && j.force && !isdir && equal(p, fn)) {
-          if (j.summary <= 0) {  // identical
-            j.ctx.emit(new InfoLine.FileSkipped(fn, InfoLine.FileSkipped.Reason.IDENTICAL,
-                "= " + fn + "\n"));
-          }
+          j.ctx.emit(new Event.FileSkipped(Ctx.t(fn), true));
           j.ctx.fs.setDateAttr(fn, p.date(), p.attr());
           ++skipped;
         } else if (j.repack == null && !j.dotest && !j.force && j.ctx.fs.exists(fn)) {  // exists, skip
-          if (j.summary <= 0) {
-            j.ctx.emit(new InfoLine.FileSkipped(fn, InfoLine.FileSkipped.Reason.EXISTS,
-                "? " + fn + "\n"));
-          }
+          j.ctx.emit(new Event.FileSkipped(Ctx.t(fn), false));
           ++skipped;
         } else if (isdir) {  // update directories later
           p.data(0);
@@ -237,8 +222,7 @@ final class Extractor {
           for (int i = 0; p.data() >= 0 && i < p.ptrSize(); ++i) {
             final int jj = p.ptr(i);  // fragment index
             if (jj == 0 || Integer.compareUnsigned(jj, j.ht.size()) >= 0 || j.ht.usize(jj) < -1) {
-              j.ctx.emit(new ErrorLine.BadFragments(p.name(),
-                  p.name() + ": bad frag IDs, skipping...\n"));
+              j.ctx.emit(new Event.BadFragments(Ctx.t(p.name())));
               p.data(-1);  // skip
               continue;
             }
@@ -264,19 +248,15 @@ final class Extractor {
       }  // end if selected
     }  // end for
     if (!j.force && skipped > 0)
-      j.ctx.emit(new InfoLine.SkippedSummary(skipped, false,
-          skipped + " ?existing files skipped (-force overwrites).\n"));
+      j.ctx.emit(new Event.SkippedSummary(skipped, false));
     if (j.force && skipped > 0)
-      j.ctx.emit(new InfoLine.SkippedSummary(skipped, true,
-          skipped + " =identical files skipped.\n"));
+      j.ctx.emit(new Event.SkippedSummary(skipped, true));
 
     // Repack to new archive
     if (j.repack != null) return repack(sz);
 
     // Decompress archive in parallel
-    j.ctx.emit(new InfoLine.ExtractPlan(job.totalSize / 1000000.0, totalFiles, j.threads,
-        String.format(java.util.Locale.ROOT, "Extracting %1.6f MB in %d files -threads %d\n",
-            job.totalSize / 1000000.0, totalFiles, j.threads)));
+    j.ctx.emit(new Event.ExtractPlan(job.totalSize, totalFiles, j.threads));
     List<Thread> tid = new ArrayList<>();
     Thread feeder = null;
     if (!j.io.random) {
@@ -326,12 +306,10 @@ final class Extractor {
                   if (outf != null) outf.close();
                   outf = null;
                   dtptr = j.dt.at(b.files.get(k));
-                  String outname = j.rename(dtptr.name());
+                  String outname = j.toOutput.apply(dtptr.name());
                   job.mutex.lock();
                   try {
-                    if (j.summary <= 0) {
-                      j.ctx.emit(new InfoLine.FileExtracted(outname, "> " + outname + "\n"));
-                    }
+                    j.ctx.emit(new Event.FileExtracted(Ctx.t(outname)));
                     if (!j.dotest) {
                       j.ctx.fs.makepath(outname);
                       Exception[] err = new Exception[1];
@@ -372,7 +350,7 @@ final class Extractor {
           } catch (RuntimeException | OutOfMemoryError e) {
             job.mutex.lock();
             try {
-              j.ctx.print("Skipping block: " + Jidac.what(e) + "\n");
+              j.ctx.note("Skipping block: " + Jidac.what(e) + "\n");
             } finally {
               job.mutex.unlock();
             }
@@ -381,7 +359,7 @@ final class Extractor {
       }
       if (outf != null) outf.close();
     }
-    if (segments > 0) j.ctx.printf("%d streaming segments extracted\n", segments);
+    if (segments > 0) j.ctx.emit(new Event.StreamingSegments(segments));
 
     // Wait for threads to finish
     for (Thread t : tid) joinThread(t);
@@ -391,7 +369,7 @@ final class Extractor {
     if (!j.dotest) {
       for (DT p : j.dt.descendingValues()) {
         if (p.data() >= 0 && p.date() != 0 && !p.name().isEmpty()) {
-          String s = j.rename(p.name());
+          String s = j.toOutput.apply(p.name());
           if (p.name().charAt(p.name().length() - 1) == '/') j.ctx.fs.makepath(s, p.date(), p.attr());
           else if ((p.attr() & 0x1ff) == 'w' + 256)  // read-only?
             j.ctx.fs.setDateAttr(s, 0, p.attr());
@@ -403,24 +381,22 @@ final class Extractor {
     int extracted = 0;
     int errors = 0;
     for (DT p : j.dt.values()) {
-      String fn = j.rename(p.name());
-      if (p.data() >= 0 && p.date() != 0 && !fn.isEmpty() && fn.charAt(fn.length() - 1) != '/') {
+      if (p.data() < 0 || p.date() == 0) continue;
+      String fn = j.toOutput.apply(p.name());
+      if (!fn.isEmpty() && fn.charAt(fn.length() - 1) != '/') {
         ++extracted;
         if (p.ptrSize() != (int) p.data()) {
-          if (++errors == 1)
-            j.ctx.eprint("\nFailed (extracted/total fragments, file):\n");
-          j.ctx.emit(new ErrorLine.ExtractFailed(fn, (int) p.data(), p.ptrSize(),
-              (int) p.data() + "/" + p.ptrSize() + " " + fn + "\n"));
+          ++errors;
+          j.ctx.emit(new Event.ExtractFailed(Ctx.t(fn), (int) p.data(), p.ptrSize()));
         }
       }
     }
     if (errors > 0) {
-      j.ctx.emit(new ErrorLine.ExtractFailures(extracted, errors,
-          String.format(java.util.Locale.ROOT,
-              "\nExtracted %d of %d files OK (%d errors) using %1.3f MB x %d threads\n",
-              extracted - errors, extracted, errors, job.maxMemory / 1000000, tid.size())));
+      j.ctx.emit(new Event.ExtractFailures(extracted, errors, job.maxMemory / 1000000,
+          tid.size()));
     }
     in.close();
+    j.errors = errors;
     return errors > 0 ? 1 : 0;
   }
 
@@ -472,8 +448,8 @@ final class Extractor {
           || (hdr[hsize - 1] & 255) != 255) {  // end of block marker
         StringBuilder sb = new StringBuilder();
         for (int k = 0; k < hsize; ++k) sb.append(hdr[k] & 255).append(k % 10 == 9 ? '\n' : ' ');
-        j.ctx.print(sb.toString());
-        j.ctx.printf("at %1.0f\n", v.offset + .0);
+        j.ctx.note(sb.toString());
+        j.ctx.note(String.format(java.util.Locale.ROOT, "at %1.0f\n", v.offset + .0));
         throw ZpaqException.error("C block in weird format");
       }
       final byte[] tail = {
@@ -492,8 +468,7 @@ final class Extractor {
       long n = end - in.tell();
       if (copy(in, out, n) != n) throw ZpaqException.error("EOF");  // copy H and I blocks
     }
-    j.ctx.emit(new InfoLine.IndexWritten(j.index, out.tell(),
-        j.index + String.format(java.util.Locale.ROOT, " -> %1.0f\n", out.tell() + .0)));
+    j.ctx.emit(new Event.IndexWritten(Ctx.t(j.index), out.tell()));
     out.close();
     in.close();
     return 0;
@@ -536,9 +511,9 @@ final class Extractor {
         copy(in, out, b.bsize);
       }
     }
-    j.ctx.printf("Data %1.0f -> ", csize + .0);
+    final long csizeBefore = csize;
     csize = out.tell() - dstart;
-    j.ctx.printf("%1.0f\n", csize + .0);
+    j.ctx.emit(new Event.RepackData(csizeBefore, csize));
 
     // Re-create referenced H blocks using latest date
     final long lastDate = j.ver.get(j.ver.size() - 1).date;
@@ -566,7 +541,7 @@ final class Extractor {
     for (java.util.Iterator<DT> it = j.dt.values().iterator(); ; ) {
       DT p = it.hasNext() ? it.next() : null;
       if (p != null && p.date() > 0 && p.data() >= 0) {
-        String filename = j.rename(p.name());
+        String filename = j.toOutput.apply(p.name());
         Jidac.puti(is, p.date(), 8);
         byte[] nb = Strs.getBytes(filename);
         is.write(nb, 0, nb.length);
@@ -593,8 +568,7 @@ final class Extractor {
     }
 
     // Summarize result
-    j.ctx.print(j.archive + String.format(java.util.Locale.ROOT, " %1.0f -> ", sz + .0)
-        + j.repack + String.format(java.util.Locale.ROOT, " %1.0f\n", out.tell() + .0));
+    j.ctx.emit(new Event.RepackWritten(Ctx.t(j.archive), sz, Ctx.t(j.repack), out.tell()));
 
     // Rewrite C block
     out.seek(cstart, InputArchive.Whence.SET);
@@ -613,7 +587,7 @@ final class Extractor {
     } catch (RuntimeException | OutOfMemoryError e) {
       job.mutex.lock();
       try {
-        j.ctx.eprint("decompress thread: " + Jidac.what(e) + "\n");
+        j.ctx.diagnostic("decompress thread: " + Jidac.what(e) + "\n");
       } finally {
         job.mutex.unlock();
       }
@@ -647,7 +621,8 @@ final class Extractor {
         } catch (RuntimeException | OutOfMemoryError ex) {
           job.mutex.lock();
           try {
-            j.ctx.eprintf("read block at %1.0f: %s\n", b.offset + 0.0, Jidac.what(ex));
+            j.ctx.diagnostic(String.format(java.util.Locale.ROOT, "read block at %1.0f: %s\n",
+                b.offset + 0.0, Jidac.what(ex)));
           } finally {
             job.mutex.unlock();
           }
@@ -656,7 +631,7 @@ final class Extractor {
     } catch (RuntimeException ex) {
       job.mutex.lock();
       try {
-        j.ctx.eprint("read blocks: " + Jidac.what(ex) + "\n");
+        j.ctx.diagnostic("read blocks: " + Jidac.what(ex) + "\n");
       } finally {
         job.mutex.unlock();
       }
@@ -765,11 +740,8 @@ final class Extractor {
           while (out.size() < outputSize && d.decompress(1 << 14)) { }
           job.mutex.lock();
           try {
-            j.ctx.printProgress(job.totalSize, job.totalDone, j.summary);
-            if (j.summary <= 0)
-              j.ctx.emit(new InfoLine.BlockExtracted(b.start, b.start + b.size - 1, out.size(),
-                  String.format(java.util.Locale.ROOT, "[%d..%d] -> %1.0f\n", b.start,
-                      b.start + b.size - 1, out.size() + 0.0)));
+            j.ctx.printProgress(job.totalSize, job.totalDone);
+            j.ctx.emit(new Event.BlockExtracted(b.start, b.start + b.size - 1, out.size()));
           } finally {
             job.mutex.unlock();
           }
@@ -779,8 +751,9 @@ final class Extractor {
         if (out.size() < outputSize) {
           job.mutex.lock();
           try {
-            j.ctx.eprintf("output [%d..%d] %d of %d bytes\n", b.start, b.start + b.size - 1,
-                out.size(), outputSize);
+            j.ctx.diagnostic(String.format(java.util.Locale.ROOT,
+                "output [%d..%d] %d of %d bytes\n", b.start, b.start + b.size - 1, out.size(),
+                outputSize));
           } finally {
             job.mutex.unlock();
           }
@@ -800,8 +773,9 @@ final class Extractor {
           if (!Arrays.equals(sha1result, want)) {
             job.mutex.lock();
             try {
-              j.ctx.eprintf("Job %d: fragment %d size %d checksum failed\n", jobNumber, jj,
-                  j.ht.usize(jj));
+              j.ctx.diagnostic(String.format(java.util.Locale.ROOT,
+                  "Job %d: fragment %d size %d checksum failed\n", jobNumber, jj,
+                  j.ht.usize(jj)));
             } finally {
               job.mutex.unlock();
             }
@@ -813,7 +787,8 @@ final class Extractor {
         // If out of memory, let another thread try
         job.mutex.lock();
         try {
-          j.ctx.eprintf("Job %d killed: %s\n", jobNumber, Jidac.what(e));
+          j.ctx.diagnostic(String.format(java.util.Locale.ROOT, "Job %d killed: %s\n",
+              jobNumber, Jidac.what(e)));
           b.state = Block.State.READY;
           b.extracted = 0;
           out.resize(0);
@@ -825,8 +800,9 @@ final class Extractor {
         // Other errors: assume bad input
         job.mutex.lock();
         try {
-          j.ctx.eprintf("Job %d: skipping [%d..%d] at %1.0f: %s\n", jobNumber,
-              b.start + b.extracted, b.start + b.size - 1, b.offset + 0.0, Jidac.what(e));
+          j.ctx.diagnostic(String.format(java.util.Locale.ROOT,
+              "Job %d: skipping [%d..%d] at %1.0f: %s\n", jobNumber, b.start + b.extracted,
+              b.start + b.size - 1, b.offset + 0.0, Jidac.what(e)));
         } finally {
           job.mutex.unlock();
         }
@@ -870,19 +846,15 @@ final class Extractor {
 
         // Open file for output
         if (job.lastdt == null) {
-          String filename = j.rename(p.name());
+          String filename = j.toOutput.apply(p.name());
           if (p.data() == 0) {
             if (!j.dotest) j.ctx.fs.makepath(filename);
-            if (j.summary <= 0) {
-              job.mutex.lock();
-              try {
-                j.ctx.printProgress(job.totalSize, job.totalDone, j.summary);
-                if (j.summary <= 0) {
-                  j.ctx.emit(new InfoLine.FileExtracted(filename, "> " + filename + "\n"));
-                }
-              } finally {
-                job.mutex.unlock();
-              }
+            job.mutex.lock();
+            try {
+              j.ctx.printProgress(job.totalSize, job.totalDone);
+              j.ctx.emit(new Event.FileExtracted(Ctx.t(filename)));
+            } finally {
+              job.mutex.unlock();
             }
             if (!j.dotest) {
               Exception[] err = new Exception[1];
@@ -941,7 +913,7 @@ final class Extractor {
         // attribute in Windows yet.
         if (p.data() == p.ptrSize()) {
           if (!j.dotest) {
-            String fn = j.rename(p.name());
+            String fn = j.toOutput.apply(p.name());
             long attr = p.attr();
             long date = p.date();
             if ((p.attr() & 0x1ff) == 'w' + 256) attr = 0;  // read-only?

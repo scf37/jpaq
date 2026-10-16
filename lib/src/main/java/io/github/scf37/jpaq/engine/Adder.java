@@ -1,8 +1,7 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.ErrorLine;
+import io.github.scf37.jpaq.Event;
 import io.github.scf37.jpaq.Format;
-import io.github.scf37.jpaq.InfoLine;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.Libzpaq;
@@ -90,7 +89,6 @@ final class Adder {
   private OutputArchive outi;     // classic format: index being written
   private boolean created;        // classic format: the archive file did not exist before
   private long indexStart = -1;   // classic format with index: its length before, -1 if new
-  boolean rollbackOnAbort;        // abort restores the classic archive (the library does this)
   private CompressJob job;
   private MemoryBuffer sb;        // block to compress
 
@@ -108,22 +106,27 @@ final class Adder {
   private FragmentScanner sc;
   private final List<Integer> blocklist = new ArrayList<>();  // list of starting fragments
 
-  /** Adds or deletes files from the archive (the command line). Returns 1 if error else 0. */
+  /**
+   * Adds the files under the roots and deletes the selected entries that are no longer there.
+   * Returns 1 if a file could not be added, else 0.
+   */
   int add() {
     try {
       prepare();
 
       // Make list of files to add or delete
-      for (String f : j.files) j.scandir(f);
+      for (String f : j.roots) j.scandir(f);
       List<DT> vf = plan(j.edt.values());
 
       // Test for reliable access to archive
       if (!seq && archiveExists != j.io.exists(Strs.subpart(j.archive, 1)))
         throw ZpaqException.error("archive access is intermittent");
 
-      start(vf.size(), true);
+      start(vf.size());
       for (DT p : vf) addExternal(p, p.name());
-      return finish();
+      int rc = finish();
+      j.errors = errors[0];
+      return rc;
     } catch (RuntimeException | Error e) {
       abort();
       throw e;
@@ -166,8 +169,7 @@ final class Adder {
       headerPos = 32 * (j.password != null && offset == 0 ? 1 : 0);
       arcname = Strs.subpart(j.archive, j.ver.size());
       if (!seq && j.io.exists(arcname)) {  // sequential: an unreferenced tome is overwritten
-        j.ctx.emit(new ErrorLine.FileError(arcname, "archive exists", null,
-            arcname + ": archive exists\n"));
+        j.ctx.fs.printerr(arcname, "archive exists");
         throw ZpaqException.error("archive exists");
       }
       if (j.password != null && j.index != null) {  // derive archive salt from index
@@ -215,10 +217,7 @@ final class Adder {
     this.arcname = arcname;
     final boolean updating = !seq && j.io.exists(arcname);
     created = !updating;
-    j.ctx.emit(new InfoLine.AddTarget(arcname, !updating, headerPos, offset,
-        (updating ? "Updating " : "Creating ") + arcname
-            + String.format(java.util.Locale.ROOT, " at offset %1.0f + %1.0f\n",
-                (double) headerPos, (double) offset)));
+    j.ctx.emit(new Event.AddTarget(Ctx.t(arcname), !updating, headerPos, offset));
 
     // Set method
     String method = j.method;
@@ -268,7 +267,7 @@ final class Adder {
     List<DT> vf = new ArrayList<>();
     for (DT p : external) {
       final String pname = p.name();
-      DT a = j.dt.get(j.rename(pname));
+      DT a = j.dt.get(j.toArchive.apply(pname));
       if (a != null) a.data(1);  // keep
       if (p.date() != 0 && !pname.isEmpty() && pname.charAt(pname.length() - 1) != '/'
           && (j.force || a == null || p.date() != a.date() || p.size() != a.size())) {
@@ -305,9 +304,8 @@ final class Adder {
    * Opens the output, starts the compression threads and writes the transaction header.
    *
    * @param nfiles number of files to compress, for the plan message
-   * @param announce emit the plan message (the command line knows the files in advance)
    */
-  void start(int nfiles, boolean announce) {
+  void start(int nfiles) {
     // Open output
     out = new OutputArchive(j.io, arcname, j.password, salt, offset);
     out.seek(headerPos, InputArchive.Whence.SET);
@@ -315,11 +313,7 @@ final class Adder {
     // Start compress and write jobs
     final int ntid = j.threads * 2 - 1;
     job = new CompressJob(j.ctx, j.threads, ntid, out, dialect);
-    if (announce) {
-      j.ctx.emit(new InfoLine.AddPlan(totalSize / 1000000.0, nfiles, method, j.threads, j.date,
-          String.format(java.util.Locale.ROOT, "Adding %1.6f MB in %d files -method %s -threads %d at %s.\n",
-              totalSize / 1000000.0, nfiles, method, j.threads, Dates.dateToString(j.date))));
-    }
+    j.ctx.emit(new Event.AddPlan(totalSize, nfiles, method, j.threads, j.date));
 
     // Streaming mode: each file is a separate block. Large files are split into blocks of size
     // blocksize.
@@ -331,9 +325,7 @@ final class Adder {
     // Adjust date to maintain sequential order
     if (j.ver.size() > 0 && j.ver.get(j.ver.size() - 1).lastdate >= j.date) {
       final long newdate = Dates.decimalTime(Dates.unixTime(j.ver.get(j.ver.size() - 1).lastdate) + 1);
-      j.ctx.emit(new ErrorLine.DateAdjusted(j.date, newdate,
-          String.format(java.util.Locale.ROOT, "Warning: adjusting date from %s to %s\n",
-              Dates.dateToString(j.date), Dates.dateToString(newdate))));
+      j.ctx.emit(new Event.DateAdjusted(j.date, newdate));
       j.date = newdate;
     }
     date = j.date;
@@ -383,21 +375,10 @@ final class Adder {
     }
     p.data(1);  // add
     try {
-      compress(p, in, p.size(), false);
+      compress(p, in, p.size());
     } finally {
       in.close();
     }
-  }
-
-  /**
-   * Adds the content of a stream as the external file p (an entry of edt), whose size is set to
-   * the number of bytes read.
-   */
-  void addStream(DT p, java.io.InputStream data) {
-    if (streaming()) throw new IllegalStateException("streaming method");
-    sc.newFile();
-    p.data(1);  // add
-    compress(p, Source.of(data), 0, true);
   }
 
   /**
@@ -405,14 +386,12 @@ final class Adder {
    * fragment pointers of p. p == null completes the last block.
    *
    * @param esize expected size of the file, used to decide whether it starts a new block
-   * @param measure set the size of p to the number of bytes read
    */
-  private void compress(DT p, Source in, long esize, boolean measure) {
+  private void compress(DT p, ArchiveFile in, long esize) {
     final byte[] fragbuf = sc.fragbuf;
 
     // Read fragments
     long fsize = 0;  // file size after dedupe
-    long read = 0;   // file size
     for (int fj = 0; true; ++fj) {
       int sz = 0;      // fragment size
       long hits = 0;   // correct prediction count
@@ -427,7 +406,6 @@ final class Adder {
         hits = sc.hits;
         o1 = sc.o1;
         totalDone += sz;
-        read += sz;
 
         // Look for matching fragment
         sha1result = sha1.result();
@@ -477,11 +455,8 @@ final class Adder {
             m += "," + Strs.itos(redundancy / (sb.size() / 256 + 1)) + ","
                 + Strs.itos((exe > frags ? 1 : 0) * 2 + (text > frags ? 1 : 0));
           String fn = "jDC" + Strs.itos(date, 14) + "d" + Strs.itos(j.ht.size() - frags, 10);
-          j.ctx.printProgress(totalSize, totalDone, j.summary);
-          if (j.summary <= 0)
-            j.ctx.emit(new InfoLine.BlockCompressed(j.ht.size() - frags, j.ht.size() - 1,
-                sb.size(), m, String.format(java.util.Locale.ROOT, "[%d..%d] %d -method %s\n",
-                    j.ht.size() - frags, j.ht.size() - 1, sb.size(), m)));
+          j.ctx.printProgress(totalSize, totalDone);
+          j.ctx.emit(new Event.BlockCompressed(j.ht.size() - frags, j.ht.size() - 1, sb.size(), m));
           if (method.charAt(0) != 'i') {
             job.write(sb, fn, m, null);
           } else {  // index: don't compress data
@@ -519,33 +494,19 @@ final class Adder {
       if (c == -1) break;
     }  // end for each fragment fj
     if (p != null) {
-      if (measure) {
-        p.size(read);
-        totalSize += read;
-      }
       dedupesize += fsize;
-      j.ctx.printProgress(totalSize, totalDone, j.summary);
-      if (j.summary <= 0) {
-        String newname = j.rename(p.name());
-        DT a = j.dt.get(newname);
-        final boolean upd = a != null && a.date() != 0;
-        StringBuilder t = new StringBuilder(upd ? "# " : "+ ").append(p.name());
-        if (!newname.equals(p.name())) t.append(" -> ").append(newname);
-        t.append(String.format(java.util.Locale.ROOT, " %1.0f", p.size() + 0.0));
-        if (fsize != p.size()) t.append(String.format(java.util.Locale.ROOT, " -> %1.0f", fsize + 0.0));
-        t.append("\n");
-        j.ctx.emit(new InfoLine.FileAdded(p.name(), newname, upd, p.size(), fsize, t.toString()));
-      }
+      j.ctx.printProgress(totalSize, totalDone);
+      String newname = j.toArchive.apply(p.name());
+      DT a = j.dt.get(newname);
+      final boolean upd = a != null && a.date() != 0;
+      j.ctx.emit(new Event.FileAdded(Ctx.t(p.name()), Ctx.t(newname), upd, p.size(), fsize));
     }
   }
 
   /** Streaming format: appends the file as blocks of its own. */
   private void addStreaming(DT p, String source) {
-    j.ctx.printProgress(totalSize, totalDone, j.summary);
-    if (j.summary <= 0) {
-      j.ctx.emit(new InfoLine.FileAdded(p.name(), p.name(), false, p.size(), -1,
-          String.format(java.util.Locale.ROOT, "+ %s %1.0f\n", p.name(), p.size() + 0.0)));
-    }
+    j.ctx.printProgress(totalSize, totalDone);
+    j.ctx.emit(new Event.FileAdded(Ctx.t(p.name()), Ctx.t(p.name()), false, p.size(), -1));
     Exception[] err = new Exception[1];
     ArchiveFile in = ArchiveFile.openRead(j.ctx.fs, source, err);
     if (in == null) {
@@ -565,7 +526,7 @@ final class Adder {
         String filename = "";
         String comment = "";
         if (i == sb.size()) {  // first block?
-          filename = j.rename(p.name());
+          filename = j.toArchive.apply(p.name());
           comment = Strs.itos(p.date());
           if ((p.attr() & 255) > 0) {
             comment += " ";
@@ -594,15 +555,14 @@ final class Adder {
 
       // Done
       final long outsize = out.tell();
-      j.ctx.printf("%1.0f + (%1.0f -> %1.0f) = %1.0f\n", (double) headerPos, (double) totalSize,
-          (double) (outsize - headerPos), (double) outsize);
+      j.ctx.emit(new Event.StreamingAddTotals(headerPos, totalSize, outsize - headerPos, outsize));
       out.close();
       out = null;
       return errors[0] > 0 ? 1 : 0;
     }
 
     // Complete the last block
-    compress(null, null, 0, false);
+    compress(null, null, 0);
 
     // Wait for jobs to finish
     job.write(sb, null, "", null);  // signal end of input
@@ -612,7 +572,7 @@ final class Adder {
     salt[0] ^= '7' ^ 'z';
     // Sequential format: the index segment is collected and written after the tome is complete
     MemoryBuffer indexSegment = seq ? new MemoryBuffer() : null;
-    if (rollbackOnAbort && !seq && j.index != null && j.io.exists(j.index))
+    if (!seq && j.index != null && j.io.exists(j.index))
       indexStart = j.io.length(j.index);
     outi = seq ? null
         : new OutputArchive(j.io, j.index != null ? j.index : "", j.password, salt, 0);
@@ -650,9 +610,7 @@ final class Adder {
         byte[] nb = Strs.getBytes(p.name());
         is.write(nb, 0, nb.length);
         is.put(0);
-        if (j.summary <= 0) {
-          j.ctx.emit(new InfoLine.FileRemoved(p.name(), "- " + p.name() + "\n"));
-        }
+        j.ctx.emit(new Event.FileRemoved(Ctx.t(p.name())));
         ++removed;
         if (is.size() > 16000) {
           compressJidacBlock(is, wp, "1",
@@ -667,18 +625,16 @@ final class Adder {
     for (java.util.Iterator<DT> it = j.edt.values().iterator(); ; ) {
       DT p = it.hasNext() ? it.next() : null;
       if (p != null) {
-        String filename = j.rename(p.name());
+        String filename = j.toArchive.apply(p.name());
         DT a = j.dt.get(filename);
         if (p.date() != 0 && (a == null  // new file
             || a.date() != p.date()  // date change
             || (a.attr() != 0 && a.attr() != p.attr())  // attr ch.
             || a.size() != p.size()  // size change
             || (p.data() != 0 && !a.samePtr(p)))) {  // content
-          if (j.summary <= 0 && p.data() == 0) {  // not compressed?
+          if (p.data() == 0) {  // not compressed?
             final boolean upd = a != null && a.date() != 0;
-            j.ctx.emit(new InfoLine.FileAdded(p.name(), filename, upd, -1, -1,
-                (upd ? "# " : "+ ") + p.name()
-                    + (filename.equals(p.name()) ? "" : " -> " + filename) + "\n"));
+            j.ctx.emit(new Event.FileAdded(Ctx.t(p.name()), Ctx.t(filename), upd, -1, -1));
           }
           ++added;
           Jidac.puti(is, p.date(), 8);
@@ -706,8 +662,7 @@ final class Adder {
       }
       if (p == null) break;
     }
-    j.ctx.emit(new InfoLine.AddSummary(added, removed,
-        String.format(java.util.Locale.ROOT, "%d +added, %d -removed.\n", added, removed)));
+    j.ctx.emit(new Event.AddSummary(added, removed));
 
     if (seq) {
       // Commit the tome first, then the index that refers to it. Nothing is patched.
@@ -721,7 +676,6 @@ final class Adder {
         writeSequentialIndex(indexSegment, salt);
       }
       out = null;
-      j.ctx.flush();
       addResult(headerPos, totalSize, dedupesize, archiveEnd);
       return errors[0] > 0 ? 1 : 0;
     }
@@ -743,26 +697,23 @@ final class Adder {
         archiveEnd = headerPos;
       if (archiveEnd < archiveSize) {
         if (archiveEnd > 0) {
-          j.ctx.emit(new InfoLine.ArchiveTruncated(archiveSize, archiveEnd,
-              String.format(java.util.Locale.ROOT, "truncating archive from %1.0f to %1.0f\n",
-                  (double) archiveSize, (double) archiveEnd)));
+          j.ctx.emit(new Event.ArchiveTruncated(archiveSize, archiveEnd));
           if (!truncate(arcname, archiveEnd)) j.ctx.fs.printerr(j.archive, "truncate failed");
         } else if (archiveEnd == 0) {
           if (j.io.delete(arcname)) {
-            j.ctx.emit(new InfoLine.ArchiveDeleted(arcname, "deleted " + arcname + "\n"));
+            j.ctx.emit(new Event.ArchiveDeleted(Ctx.t(arcname)));
           }
         }
       }
     }
-    j.ctx.flush();
     addResult(headerPos, totalSize, dedupesize, archiveEnd);
     return errors[0] > 0 ? 1 : 0;
   }
 
   /**
-   * Stops an update that failed or was abandoned: the compression threads end and a partial tome
-   * is not committed (where the storage allows; a classic archive keeps a transaction that
-   * readers ignore).
+   * Stops an update that failed: the compression threads end, a partial tome is not committed
+   * (where the storage allows) and a classic archive and its index are truncated back to what
+   * they were.
    */
   void abort() {
     if (job != null) job.abort();  // no-op if finished normally
@@ -770,7 +721,7 @@ final class Adder {
     if (out != null) out.abort();
     out = null;
     if (outi != null) outi.abort();
-    if (!rollbackOnAbort || seq || !open) return;
+    if (seq || !open) return;
 
     // Classic format: take back what was written, so the archive is as it was
     try {
@@ -788,11 +739,8 @@ final class Adder {
   }
 
   private void addResult(long headerPos, long totalSize, long dedupesize, long archiveEnd) {
-    j.ctx.emit(new InfoLine.AddResult(headerPos, totalSize, dedupesize, archiveEnd - headerPos,
-        archiveEnd,
-        String.format(java.util.Locale.ROOT, "\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n",
-            headerPos / 1000000.0, totalSize / 1000000.0, dedupesize / 1000000.0,
-            (archiveEnd - headerPos) / 1000000.0, archiveEnd / 1000000.0)));
+    j.ctx.emit(new Event.AddTotals(headerPos, totalSize, dedupesize, archiveEnd - headerPos,
+        archiveEnd));
   }
 
   /** Truncates filename to length. Returns true on success. */

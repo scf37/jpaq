@@ -6,14 +6,62 @@ import java.nio.charset.StandardCharsets;
 public final class Strs {
   private Strs() {}
 
-  /** Converts a Java string to a byte string holding its UTF-8 encoding. */
+  /**
+   * Converts a Java string to a byte string holding its UTF-8 encoding. Chars U+DC80..U+DCFF
+   * (lone surrogates, see {@link #fromBytes}) stand for the bytes 0x80..0xFF.
+   */
   public static String toBytes(String s) {
-    return new String(s.getBytes(StandardCharsets.UTF_8), StandardCharsets.ISO_8859_1);
+    StringBuilder r = new StringBuilder(s.length() + 16);
+    for (int i = 0; i < s.length(); ) {
+      int c = s.codePointAt(i);
+      i += Character.charCount(c);
+      if (c < 0x80) {
+        r.append((char) c);
+      } else if (c >= 0xDC80 && c <= 0xDCFF) {
+        r.append((char) (c - 0xDC00));
+      } else if (c < 0x800) {
+        r.append((char) (0xC0 | c >> 6)).append((char) (0x80 | c & 63));
+      } else if (c < 0x10000) {
+        r.append((char) (0xE0 | c >> 12)).append((char) (0x80 | c >> 6 & 63))
+            .append((char) (0x80 | c & 63));
+      } else {
+        r.append((char) (0xF0 | c >> 18)).append((char) (0x80 | c >> 12 & 63))
+            .append((char) (0x80 | c >> 6 & 63)).append((char) (0x80 | c & 63));
+      }
+    }
+    return r.toString();
   }
 
-  /** Converts a byte string holding UTF-8 to a Java string. */
+  /**
+   * Converts a byte string holding UTF-8 to a Java string. Bytes that are not part of valid UTF-8
+   * become the chars U+DC80..U+DCFF, so that {@link #toBytes} gives the same bytes back.
+   */
   public static String fromBytes(String b) {
-    return new String(b.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
+    StringBuilder r = new StringBuilder(b.length());
+    final int n = b.length();
+    for (int i = 0; i < n; ) {
+      int c = b.charAt(i);
+      int len = c < 0x80 ? 1 : c >= 0xC2 && c < 0xE0 ? 2 : c >= 0xE0 && c < 0xF0 ? 3
+          : c >= 0xF0 && c < 0xF5 ? 4 : 0;
+      int cp = len == 2 ? c & 31 : len == 3 ? c & 15 : c & 7;
+      boolean ok = len > 0 && i + len <= n;
+      for (int k = 1; ok && k < len; k++) {
+        int d = b.charAt(i + k);
+        if ((d & 0xC0) != 0x80) ok = false;
+        cp = cp << 6 | (d & 63);
+      }
+      if (ok && len == 1) cp = c;
+      if (ok && ((len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp < 0xE000)))
+          || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)))) ok = false;
+      if (ok) {
+        r.appendCodePoint(cp);
+        i += len;
+      } else {
+        r.append((char) (0xDC00 + c));
+        i++;
+      }
+    }
+    return r.toString();
   }
 
   /** Converts non-negative decimal number x to string of at least n digits. */
