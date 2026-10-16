@@ -5,8 +5,9 @@ A Java 25 port of the [ZPAQ](http://mattmahoney.net/dc/zpaq.html) journaling arc
 
 | module | artifact | contents |
 |--------|----------|----------|
-| [`libzpaq/`](libzpaq) | `jpaq-libzpaq` | the compression library: ZPAQ level 2 compressor / decompressor, ZPAQL compiler and interpreter, LZ77 / BWT / E8E9 preprocessors, SHA-1, SHA-256, AES-CTR, scrypt |
-| [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`; journaling, deduplication, encryption, multi-part archives, indexes, streaming format) built on the library, and a Java API with pluggable archive storage and typed output (see [Calling the archiver from Java](#calling-the-archiver-from-java)) |
+| [`libzpaq/`](libzpaq) | `jpaq-libzpaq` | the compression library: ZPAQ level 2 compressor / decompressor, ZPAQL compiler and interpreter, LZ77 / BWT / E8E9 preprocessors, SHA-1, SHA-256, AES-CTR, scrypt (see [Compression library](#compression-library)) |
+| [`lib/`](lib) | `jpaq-lib` | the archive library: create, update, read and extract zpaq and jpaq journaling archives (deduplication, versions, encryption, multi-part archives, indexes), with files added from streams and read as streams, and archive files in any storage (see [Archive library](#archive-library)) |
+| [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`) on top of the archive library |
 | [`cpp/`](cpp) | – | the original C++ sources the port was made from (kept as the reference implementation) |
 | [`tools/difftest/`](tools/difftest) | – | differential test tools that run this port and the C++ original side by side |
 
@@ -69,49 +70,94 @@ Differences from the C++ program:
 * The banner line says "Java port" instead of the compile date; the `-DDEBUG` help for advanced
   options of the C++ debug build is not included (the options themselves work).
 
-### Calling the archiver from Java
+### Running the command line in process
 
-Applications (for example a backup program) run the archiver in-process through
-`io.github.scf37.jpaq.cli.Zpaq`, without spawning a JVM. Nothing calls `System.exit`.
-
-**With command line arguments** (output collected as text):
+`io.github.scf37.jpaq.cli.Zpaq` runs a command line without spawning a JVM, with the output collected
+as text. Nothing calls `System.exit`, and calls may run in parallel.
 
 ```java
 Zpaq.Result r = Zpaq.run(workDir, "a", "backup.zpaq", "data", "-m2", "-key", "secret");
 if (!r.ok()) throw new IOException(r.stderr());      // exitCode: 0 OK, 1 warnings, 2 errors
-String listing = Zpaq.run(workDir, "l", "backup.zpaq").stdout();
 ```
 
-**Typed**, with archive files in any storage and the output as objects:
+For anything else use the archive library.
+
+## Archive library
+
+```xml
+<dependency>
+  <groupId>io.github.scf37.jpaq</groupId>
+  <artifactId>jpaq-lib</artifactId>
+  <version>7.15.0</version>
+</dependency>
+```
+
+`ZpaqArchive` is a handle to an archive: where it is (a `Storage` and a name), its password, the format
+it is written in, the number of threads, and an optional listener for progress. Every operation reads or
+writes the archive anew; nothing is global, so operations on different archives run in parallel.
 
 ```java
-Storage storage = new ShellStorage("cat \"$1\"", "cat > \"$1\"", "rm -f \"$1\"", dir); // or your own
-Options o = new Options().method("2").key("secret").threads(4);
-int rc = Zpaq.run(storage, workDir,
-    new Command.Add("data???.jpaq", List.of("home/docs"), o, Format.SEQUENTIAL, "index-41.jpaq", "index-42.jpaq"),
-    line -> {
-      switch (line) {
-        case InfoLine.FileAdded f -> log("added " + f.name() + " " + f.size());
-        case ErrorLine.FileError e -> warn(e.name() + ": " + e.reason());
-        default -> { }
-      }
-    });
-try (Stream<Line> lines = Zpaq.stream(storage, workDir, new Command.Extract(...))) { ... }
+ZpaqArchive archive = ZpaqArchive.of(Path.of("backup.zpaq")).withKey("secret");
+
+// a new version: files from streams, local files, directory trees; deletions
+try (ArchiveUpdate u = archive.update(UpdateOptions.DEFAULT.withMethod("2"))) {
+  u.addTree(Path.of("/home/me/docs"), "docs");                 // like `zpaq add`: new and changed files,
+                                                              // entries of vanished files deleted
+  try (InputStream dump = pgDump.getInputStream()) {
+    u.add("db/dump.sql", dump);                               // any stream, read to its end
+  }
+  u.addFile("etc/app.conf", Path.of("/etc/app.conf"));
+  u.delete("tmp");                                            // and everything under it
+  UpdateResult r = u.commit();                                // without commit: nothing happened
+  log.info("version {}: +{} -{}, {} bytes new", r.version(), r.added(), r.removed(), r.compressedBytes());
+}
+
+// read a version: entries, and contents as streams
+try (ArchiveReader r = archive.read(ReadOptions.LATEST.withVersion(-1))) {   // or withDate(instant)
+  for (ArchiveEntry e : r.entries()) System.out.println(e.name() + " " + e.size() + " " + e.lastModified());
+  try (InputStream in = r.open("db/dump.sql")) { restore(in); }
+  r.forEach((entry, content) -> tar.put(entry, content));   // everything, in storage order
+}
+
+// extract to a directory, or just check everything
+ExtractResult x = archive.extract(Path.of("/restore"), ExtractOptions.DEFAULT.withInclude("docs").withOverwrite(true));
+if (!x.ok()) x.problems().forEach(p -> log.warn(p.text()));
+archive.verify();
 ```
 
-Commands are `Add`, `Extract`, `ListArchive` and `RebuildIndex`. Output is `InfoLine` (what the command
-line prints to stdout, plus result statistics) and `ErrorLine` (problems) records such as `FileAdded`,
-`FileExtracted`, `ListEntry`, `Progress`, `Finished`, `FileError`, `Fatal`; `line.text()` is exactly the
-text the command line prints and `line.channel()` where. Calls are serialized (the program keeps
-global state).
+Behaviour worth knowing:
 
-#### Storage and the sequential format
+* **Updates are transactions.** Files are compressed while they are added (in background threads); the
+  version exists once `commit()` returns. Closing an update without committing, or a failure while
+  adding (a stream that throws, a storage that fails), leaves the archive as it was. An update that
+  changes nothing writes nothing.
+* **Updates only touch what they name.** Unlike `zpaq add`, entries the update does not mention are kept.
+  `addTree(dir, name)` makes the archive under `name` like `dir` (it deletes entries of files that are gone
+  there) and fails if `dir` does not exist instead of deleting everything.
+* **Contents are verified.** Every fragment read through `ArchiveReader` is checked against its SHA-1;
+  a damaged one makes the stream throw. Extraction reports damaged files in `ExtractResult.problems()`
+  and extracts the rest.
+* **Extraction is confined.** Names are extracted under the target directory (a leading `/` or drive
+  letter is dropped); names with `..` components are not extracted.
+* **Errors** are `IOException`s: `NoSuchFileException` for a missing archive or file,
+  `ArchiveException` for archives that are damaged, not archives, or have another password.
+  `UnsupportedStorageException` (unchecked) when the storage cannot do what the format needs.
+* **Byte for byte.** The library writes the same archives as the command line, which writes the same
+  archives as zpaq 7.15.
+* **File names** must be valid UTF-8 and, to name local files that are not ASCII, the JVM must run in a
+  UTF-8 locale (see the command line notes). Streams in and out have no such limit.
 
-Archive files (parts/tomes and index files) are read and written through `api.Storage`: streaming
+The engine package (`io.github.scf37.jpaq.engine`) is exported only to the command line module; the
+public API is the package `io.github.scf37.jpaq` (module `io.github.scf37.jpaq`).
+
+### Storage and the sequential format
+
+Archive files (parts/tomes and index files) are read and written through `Storage`: streaming
 `read(name)`, `write(name)` and `delete(name)`, which is what a shell script can do, plus capabilities
 a storage may declare: `PROBE` (`exists`, `length`), `RANGED_READ` (start reading at an offset) and
 `RANDOM_WRITE` (positional read/write/truncate). A failed operation is just a failure: the archiver never
-interprets the reason. `LocalFsStorage` (all capabilities) is what the command line uses.
+interprets the reason. `LocalFsStorage` (all capabilities) is what the command line uses;
+`ShellStorage` runs three shell commands (`cat "$1"`, `aws s3 cp - "s3://bucket/$1"`, ...).
 
 * `Format.CLASSIC`: the zpaq 7.15 format, byte identical to the C++ program. Writing needs `RANDOM_WRITE`
   and `PROBE` (the transaction header is patched at the end and empty updates are truncated).
@@ -119,9 +165,19 @@ interprets the reason. `LocalFsStorage` (all capabilities) is what the command l
   nothing is patched or truncated. Needs only streaming read/write/delete and an index. See
   [docs/SEQUENTIAL.md](docs/SEQUENTIAL.md). Stock zpaq cannot read these archives (and says so cleanly).
 
+```java
+Storage s3 = new ShellStorage("aws s3 cp \"s3://bkp/$1\" -", "aws s3 cp - \"s3://bkp/$1\"", "aws s3 rm \"s3://bkp/$1\"");
+ZpaqArchive a = ZpaqArchive.of(s3, "home???.jpaq").withFormat(Format.SEQUENTIAL).withKey(key);
+try (ArchiveUpdate u = a.update(UpdateOptions.DEFAULT.withIndex("index-41.jpaq").withIndexOut("index-42.jpaq"))) {
+  u.addTree(home, "home");
+  u.commit();                    // writes home042.jpaq, then index-42.jpaq; index-41.jpaq is not touched
+}
+try (ArchiveReader r = a.read(ReadOptions.LATEST.withIndex("index-42.jpaq"))) { ... }
+```
+
 The jpaq command line reads both formats and any file extension; it writes the classic format.
 
-## Library
+## Compression library
 
 ```java
 import io.github.scf37.jpaq.libzpaq.*;
@@ -172,7 +228,10 @@ The port was verified against the C++ implementation compiled from [`cpp/`](cpp)
   methods with the SHA-256 of the C++ output (`libzpaq/src/test/resources/golden`); `cli` runs
   scenarios (all levels, updates, deletions, `-all`/`-until`, streaming, multi-part, index,
   encrypted, repack, listings, extraction) and compares archive hashes, listing output and the
-  extracted trees with values recorded from the C++ program (`cli/src/test/resources`).
+  extracted trees with values recorded from the C++ program (`cli/src/test/resources`), and checks
+  that the archive library writes the same bytes as the command line; `lib` tests the library API
+  (streams, versions, abandoned and failed updates, damaged archives, the sequential format on
+  stream-only storage, parallel use).
 * **Differential tests** (`tools/difftest`): run both programs on the same inputs and compare
   the archives, the console output, exit codes and the files and attributes they extract. This
   includes a random-tree fuzzer over methods, options and update sequences.

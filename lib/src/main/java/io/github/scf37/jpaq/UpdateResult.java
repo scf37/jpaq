@@ -8,7 +8,8 @@ import java.util.List;
  *
  * @param changed false if the update changed nothing, in which case nothing was written
  * @param version the number of the new version, or of the latest one if nothing changed
- * @param date the date of the update
+ * @param date the date of the update: the one asked for, or one second after the previous
+ *     version if that is not earlier (versions are in date order)
  * @param added files and directories added or changed
  * @param removed entries deleted
  * @param inputBytes size of the files added

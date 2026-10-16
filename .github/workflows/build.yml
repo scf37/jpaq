@@ -32,6 +32,8 @@ jobs:
         run: mvn -B -ntp -DskipTests install
       - name: Build C++ reference
         run: tools/difftest/build-ref.sh
+      - name: Stock zpaq does not see jpaq archives
+        run: ZPAQ_CPP=$PWD/tools/difftest/build/zpaq mvn -B -ntp -pl lib -am test -Dtest=SequentialArchiveTest -Dsurefire.failIfNoSpecifiedTests=false
       - name: Scenarios
         run: |
           for s in tools/difftest/scenarios/0[1-7]*.sh; do
