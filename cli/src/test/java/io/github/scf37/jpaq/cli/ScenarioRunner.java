@@ -27,6 +27,7 @@ final class ScenarioRunner {
   private final Path refFixed;   // external binary with the fixed random generator
   private boolean fixed;
   private String epoch;  // SOURCE_DATE_EPOCH for the next commands, or null
+  private java.time.Instant clock;  // the same for the commands run in process
 
   ScenarioRunner(Path ref, Path refFixed) {
     this.ref = ref;
@@ -70,7 +71,7 @@ final class ScenarioRunner {
     TreeBuilder.build(dir);
     fixed = false;
     epoch = null;
-    Jidac.clockOverride = null;
+    clock = null;
     Crypto.setRandomSource(null);
     byte[] lastOut = new byte[0];
     int step = 0;
@@ -87,7 +88,7 @@ final class ScenarioRunner {
           }
           case "epoch" -> {
             epoch = w[1];
-            Jidac.clockOverride = java.time.Instant.ofEpochSecond(Long.parseLong(epoch));
+            clock = java.time.Instant.ofEpochSecond(Long.parseLong(epoch));
           }
           case "mutate" -> TreeBuilder.mutate(dir, Integer.parseInt(w[1]));
           case "zpaq" -> {
@@ -111,7 +112,6 @@ final class ScenarioRunner {
       }
     } finally {
       Crypto.setRandomSource(null);
-      Jidac.clockOverride = null;
     }
     return results;
   }
@@ -119,16 +119,9 @@ final class ScenarioRunner {
   private byte[] runZpaq(Path dir, String[] args) throws Exception {
     if (ref == null) {
       ByteArrayOutputStream bo = new ByteArrayOutputStream();
-      PrintStream oldOut = Console.out;
-      PrintStream oldErr = Console.err;
       PrintStream out = new PrintStream(bo, false, StandardCharsets.ISO_8859_1);
-      Console.setStreams(out, new PrintStream(new ByteArrayOutputStream()));
-      try {
-        Main.run(dir, args);
-      } finally {
-        out.flush();
-        Console.setStreams(oldOut, oldErr);
-      }
+      Main.run(dir, clock, out, new PrintStream(new ByteArrayOutputStream()), args);
+      out.flush();
       return bo.toByteArray();
     }
     List<String> cmd = new ArrayList<>();
