@@ -6,7 +6,7 @@ A Java 25 port of the [ZPAQ](http://mattmahoney.net/dc/zpaq.html) journaling arc
 | module | artifact | contents |
 |--------|----------|----------|
 | [`libzpaq/`](libzpaq) | `jpaq-libzpaq` | the compression library: ZPAQ level 2 compressor / decompressor, ZPAQL compiler and interpreter, LZ77 / BWT / E8E9 preprocessors, SHA-1, SHA-256, AES-CTR, scrypt (see [Compression library](#compression-library)) |
-| [`lib/`](lib) | `jpaq-lib` | the archive library: create, update, read, extract and repack zpaq and jpaq journaling archives (deduplication, versions, encryption, multi-part archives, indexes) of local files, with the archive files in any storage, streaming ones included (see [Archive library](#archive-library)) |
+| [`api/`](api) | `jpaq-api` | the archive library: create, update, read, extract and repack zpaq and jpaq journaling archives (deduplication, versions, encryption, multi-part archives, indexes) of local files, with the archive files in any storage, streaming ones included (see [Archive library](#archive-library)) |
 | [`cli/`](cli) | `jpaq-cli` | the `zpaq` command line archiver (`add`, `extract`, `list`), built on the public API of the archive library only |
 | [`cpp/`](cpp) | – | the original C++ sources the port was made from (kept as the reference implementation) |
 | [`tools/difftest/`](tools/difftest) | – | differential test tools that run this port and the C++ original side by side |
@@ -86,13 +86,13 @@ if (!r.ok()) throw new IOException(r.stderr());      // exitCode: 0 OK, 1 warnin
 ```xml
 <dependency>
   <groupId>io.github.scf37.jpaq</groupId>
-  <artifactId>jpaq-lib</artifactId>
+  <artifactId>jpaq-api</artifactId>
   <version>7.15.0</version>
 </dependency>
 ```
 
-The layers are separate: `jpaq-libzpaq` compresses, `jpaq-lib` works on incremental archives, and the
-command line is built on the public API of `jpaq-lib` (module `io.github.scf37.jpaq`, package
+The layers are separate: `jpaq-libzpaq` compresses, `jpaq-api` works on incremental archives, and the
+command line is built on the public API of `jpaq-api` (module `io.github.scf37.jpaq`, package
 `io.github.scf37.jpaq`) and nothing else. Everything the zpaq command line does, the API does.
 
 `ZpaqArchive` is a handle to an archive: where it is (a `Storage` and a name), its password, the format
@@ -224,7 +224,7 @@ The port was verified against the C++ implementation compiled from [`cpp/`](cpp)
   methods with the SHA-256 of the C++ output (`libzpaq/src/test/resources/golden`); `cli` runs
   scenarios (all levels, updates, deletions, `-all`/`-until`, streaming, multi-part, index,
   encrypted, repack, listings, extraction) and compares archive hashes, listing output and the
-  extracted trees with values recorded from the C++ program (`cli/src/test/resources`), ; `lib` tests the
+  extracted trees with values recorded from the C++ program (`cli/src/test/resources`); `api` tests the
   library API (versions, names and filters, rollback, repack, indexes, failed updates, damaged
   archives, the sequential format on stream-only storage, parallel use).
 * **Differential tests** (`tools/difftest`): run both programs on the same inputs and compare

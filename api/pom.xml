@@ -8,8 +8,8 @@
     <artifactId>jpaq-parent</artifactId>
     <version>7.15.0-SNAPSHOT</version>
   </parent>
-  <artifactId>jpaq-lib</artifactId>
-  <name>jpaq-lib</name>
+  <artifactId>jpaq-api</artifactId>
+  <name>jpaq-api</name>
   <description>Library to create, update, read and extract zpaq and jpaq archives</description>
 
   <dependencies>

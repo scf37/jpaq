@@ -25,7 +25,7 @@
 
   <modules>
     <module>libzpaq</module>
-    <module>lib</module>
+    <module>api</module>
     <module>cli</module>
   </modules>
 
@@ -44,7 +44,7 @@
       </dependency>
       <dependency>
         <groupId>io.github.scf37.jpaq</groupId>
-        <artifactId>jpaq-lib</artifactId>
+        <artifactId>jpaq-api</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
