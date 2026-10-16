@@ -63,10 +63,18 @@ final class TreeBuilder {
   private static void file(Path root, String rel, byte[] data, long mtime, int mode)
       throws IOException {
     Path p = root.resolve(rel);
-    Files.createDirectories(p.getParent());
+    createDirectories(root, p.getParent());
     Files.write(p, data);
     setMode(p, mode);
     Files.setLastModifiedTime(p, FileTime.from(Instant.ofEpochSecond(mtime)));
+  }
+
+  /** Creates missing directories with mode 0755 regardless of the umask. */
+  private static void createDirectories(Path root, Path d) throws IOException {
+    if (Files.isDirectory(d)) return;
+    if (!d.equals(root)) createDirectories(root, d.getParent());
+    Files.createDirectory(d);
+    setMode(d, 0755);
   }
 
   static void setMode(Path p, int mode) throws IOException {
@@ -163,8 +171,13 @@ final class TreeBuilder {
         Object mode = Files.getAttribute(p, "unix:mode");
         long mtime = Files.getLastModifiedTime(p).toInstant().getEpochSecond();
         // files and directories created without a stored date get the current time: not comparable
-        if (mtime > T0 + 1_000_000) mtime = -1;
-        md.update((root.relativize(p) + (d ? "/" : "") + "\t" + Integer.toOctalString((Integer) mode & 07777)
+        int m = (Integer) mode & 07777;
+        if (mtime > T0 + 1_000_000) {
+          mtime = -1;
+          // created without stored attributes: the mode depends on the umask, golden has 022
+          m = d ? 0755 : 0644;
+        }
+        md.update((root.relativize(p) + (d ? "/" : "") + "\t" + Integer.toOctalString(m)
             + "\t" + mtime + "\t").getBytes(StandardCharsets.UTF_8));
         if (!d) md.update(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(p)));
         md.update((byte) '\n');
