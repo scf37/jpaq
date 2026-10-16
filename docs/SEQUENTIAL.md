@@ -9,7 +9,7 @@ no truncating, no overwriting.
 The zpaq format has two spots where a writer has to go back:
 
 * the transaction header (block `c`) at the start of every update holds the total size of the data blocks
-  that follow. It is written as -1 and patched at the end (`Adder.java`, `writeJidacHeader`);
+  that follow. It is written as -1 and patched at the end (`engine/Adder.java`, `writeJidacHeader`);
 * an update that turns out to be empty is truncated away afterwards.
 
 Readers of the classic format also jump over data blocks using that size.
@@ -36,8 +36,8 @@ Tome = `C` `D`... `H`... `I`...; index segment of an update = `C` `H`... `I`... 
 An update writes the tome, closes it (the commit of the upload), and only then writes the new index. The
 caller keeps the previous index until the new one is stored:
 
-* the index is never written under the name of an older one: `Command.Add(..., index = "idx-41", indexOut =
-  "idx-42")` reads the old index, copies it and appends the new segment under the new name;
+* the index is never written under the name of an older one: an update with
+  `UpdateOptions.DEFAULT.withIndex("idx-41").withIndexOut("idx-42")` reads the old index, copies it and appends the new segment under the new name;
 * a tome that was uploaded but is not in any index (failed upload, crash before the index) is an orphan:
   it is ignored and overwritten by the next update, which gets the same name (the tome number is the number
   of versions in the index + 1);
@@ -49,13 +49,13 @@ the caller says whether an index exists by passing its name, tome numbers come f
 
 ## Reading
 
-* **With the index** (`Extract`/`ListArchive` with `index`): file list and fragment table come from the index
+* **With the index** (`ReadOptions.withIndex`, for reading and extracting): file list and fragment table come from the index
   (one sequential read). The data blocks of tomes are read in archive order, in parallel decompression;
   tomes (and with `RANGED_READ` parts of tomes) that hold nothing wanted are not transferred. Offsets
   and sizes of the tomes come from the index: the position of a block in tome *k* is the header plus the sum
   of the compressed block sizes listed in the index, and tome *k* is as long as its index segment plus its data.
 * **Without the index** (recovery): the tomes are scanned front to back for the file list (a second pass reads
-  the data), and `RebuildIndex` writes a new index. Finding the parts of `arc???.jpaq` needs `PROBE`.
+  the data), and `ZpaqArchive.writeIndex` writes a new index. Finding the parts of `arc???.jpaq` needs `PROBE`.
 * A tome without its file list at the end (an upload that did not finish) is ignored by the scan.
 
 ## Limits

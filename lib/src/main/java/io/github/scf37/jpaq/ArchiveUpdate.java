@@ -145,9 +145,11 @@ public final class ArchiveUpdate implements Closeable {
     final int added = s != null ? s.added() : 0;
     final int removed = s != null ? s.removed() : 0;
     final boolean changed = added + removed > 0;
+    // a date moved past the previous version is reported by date(), it is not a problem
+    var problems = run.problems().stream().filter(l -> !(l instanceof ErrorLine.DateAdjusted)).toList();
     return new UpdateResult(changed, u.versions() + (changed ? 1 : 0), date(), added, removed,
         r != null ? r.inputBytes() : 0, r != null ? r.dedupedBytes() : 0,
-        r != null ? r.addedBytes() : 0, run.problems());
+        r != null ? r.addedBytes() : 0, problems);
   }
 
   /** Abandons the update unless it was committed. */

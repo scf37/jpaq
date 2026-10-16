@@ -151,6 +151,14 @@ class ZpaqArchiveTest {
     try (ArchiveReader r = a.read()) {
       assertEquals(2, r.versions().size());
     }
+    // a date before the latest version moves to just after it
+    try (ArchiveUpdate u = a.update(UpdateOptions.DEFAULT.withDate(T1))) {
+      assertEquals(T2.plusSeconds(1), u.date());
+      u.add("late.txt", in("late".getBytes()));
+      UpdateResult r4 = u.commit();
+      assertTrue(r4.ok(), r4.toString());
+      assertEquals(T2.plusSeconds(1), r4.date());
+    }
   }
 
   @Test
