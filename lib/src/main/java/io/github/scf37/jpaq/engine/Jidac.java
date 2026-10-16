@@ -754,7 +754,7 @@ public final class Jidac {
     }
   }
 
-  private static long attrOf(Fs.Stat sb) {
+  static long attrOf(Fs.Stat sb) {
     if (Fs.UNIX) return 'u' + ((sb.mode() & 0xFFFFFFFFL) << 8);
     return 'w' + (sb.mode() << 8);
   }
