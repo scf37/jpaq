@@ -1,7 +1,7 @@
 package io.github.scf37.jpaq.engine;
 
 import io.github.scf37.jpaq.Event;
-import io.github.scf37.jpaq.Format;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.Libzpaq;
@@ -217,7 +217,7 @@ final class Adder {
     this.arcname = arcname;
     final boolean updating = !seq && j.io.exists(arcname);
     created = !updating;
-    j.ctx.emit(new Event.AddTarget(Ctx.t(arcname), !updating, headerPos, offset));
+    j.ctx.emit(Event.AddTarget.of(Ctx.t(arcname), !updating, headerPos, offset));
 
     // Set method
     String method = j.method;
@@ -313,7 +313,7 @@ final class Adder {
     // Start compress and write jobs
     final int ntid = j.threads * 2 - 1;
     job = new CompressJob(j.ctx, j.threads, ntid, out, dialect);
-    j.ctx.emit(new Event.AddPlan(totalSize, nfiles, method, j.threads, j.date));
+    j.ctx.emit(Event.AddPlan.of(totalSize, nfiles, method, j.threads, j.date));
 
     // Streaming mode: each file is a separate block. Large files are split into blocks of size
     // blocksize.
@@ -325,7 +325,7 @@ final class Adder {
     // Adjust date to maintain sequential order
     if (j.ver.size() > 0 && j.ver.get(j.ver.size() - 1).lastdate >= j.date) {
       final long newdate = Dates.decimalTime(Dates.unixTime(j.ver.get(j.ver.size() - 1).lastdate) + 1);
-      j.ctx.emit(new Event.DateAdjusted(j.date, newdate));
+      j.ctx.emit(Event.DateAdjusted.of(j.date, newdate));
       j.date = newdate;
     }
     date = j.date;
@@ -456,7 +456,7 @@ final class Adder {
                 + Strs.itos((exe > frags ? 1 : 0) * 2 + (text > frags ? 1 : 0));
           String fn = "jDC" + Strs.itos(date, 14) + "d" + Strs.itos(j.ht.size() - frags, 10);
           j.ctx.printProgress(totalSize, totalDone);
-          j.ctx.emit(new Event.BlockCompressed(j.ht.size() - frags, j.ht.size() - 1, sb.size(), m));
+          j.ctx.emit(Event.BlockCompressed.of(j.ht.size() - frags, j.ht.size() - 1, sb.size(), m));
           if (method.charAt(0) != 'i') {
             job.write(sb, fn, m, null);
           } else {  // index: don't compress data
@@ -499,14 +499,14 @@ final class Adder {
       String newname = j.toArchive.apply(p.name());
       DT a = j.dt.get(newname);
       final boolean upd = a != null && a.date() != 0;
-      j.ctx.emit(new Event.FileAdded(Ctx.t(p.name()), Ctx.t(newname), upd, p.size(), fsize));
+      j.ctx.emit(Event.FileAdded.of(Ctx.t(p.name()), Ctx.t(newname), upd, p.size(), fsize));
     }
   }
 
   /** Streaming format: appends the file as blocks of its own. */
   private void addStreaming(DT p, String source) {
     j.ctx.printProgress(totalSize, totalDone);
-    j.ctx.emit(new Event.FileAdded(Ctx.t(p.name()), Ctx.t(p.name()), false, p.size(), -1));
+    j.ctx.emit(Event.FileAdded.of(Ctx.t(p.name()), Ctx.t(p.name()), false, p.size(), -1));
     Exception[] err = new Exception[1];
     ArchiveFile in = ArchiveFile.openRead(j.ctx.fs, source, err);
     if (in == null) {
@@ -555,7 +555,8 @@ final class Adder {
 
       // Done
       final long outsize = out.tell();
-      j.ctx.emit(new Event.StreamingAddTotals(headerPos, totalSize, outsize - headerPos, outsize));
+      j.ctx.emit(Event.AddTotals.of(true, headerPos, totalSize, totalSize, outsize - headerPos,
+          outsize));
       out.close();
       out = null;
       return errors[0] > 0 ? 1 : 0;
@@ -610,7 +611,7 @@ final class Adder {
         byte[] nb = Strs.getBytes(p.name());
         is.write(nb, 0, nb.length);
         is.put(0);
-        j.ctx.emit(new Event.FileRemoved(Ctx.t(p.name())));
+        j.ctx.emit(Event.FileRemoved.of(Ctx.t(p.name())));
         ++removed;
         if (is.size() > 16000) {
           compressJidacBlock(is, wp, "1",
@@ -634,7 +635,7 @@ final class Adder {
             || (p.data() != 0 && !a.samePtr(p)))) {  // content
           if (p.data() == 0) {  // not compressed?
             final boolean upd = a != null && a.date() != 0;
-            j.ctx.emit(new Event.FileAdded(Ctx.t(p.name()), Ctx.t(filename), upd, -1, -1));
+            j.ctx.emit(Event.FileAdded.of(Ctx.t(p.name()), Ctx.t(filename), upd, -1, -1));
           }
           ++added;
           Jidac.puti(is, p.date(), 8);
@@ -662,7 +663,7 @@ final class Adder {
       }
       if (p == null) break;
     }
-    j.ctx.emit(new Event.AddSummary(added, removed));
+    j.ctx.emit(Event.AddSummary.of(added, removed));
 
     if (seq) {
       // Commit the tome first, then the index that refers to it. Nothing is patched.
@@ -697,11 +698,11 @@ final class Adder {
         archiveEnd = headerPos;
       if (archiveEnd < archiveSize) {
         if (archiveEnd > 0) {
-          j.ctx.emit(new Event.ArchiveTruncated(archiveSize, archiveEnd));
+          j.ctx.emit(Event.ArchiveTruncated.of(archiveSize, archiveEnd));
           if (!truncate(arcname, archiveEnd)) j.ctx.fs.printerr(j.archive, "truncate failed");
         } else if (archiveEnd == 0) {
           if (j.io.delete(arcname)) {
-            j.ctx.emit(new Event.ArchiveDeleted(Ctx.t(arcname)));
+            j.ctx.emit(Event.ArchiveDeleted.of(Ctx.t(arcname)));
           }
         }
       }
@@ -739,7 +740,7 @@ final class Adder {
   }
 
   private void addResult(long headerPos, long totalSize, long dedupesize, long archiveEnd) {
-    j.ctx.emit(new Event.AddTotals(headerPos, totalSize, dedupesize, archiveEnd - headerPos,
+    j.ctx.emit(Event.AddTotals.of(false, headerPos, totalSize, dedupesize, archiveEnd - headerPos,
         archiveEnd));
   }
 

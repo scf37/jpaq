@@ -4,6 +4,12 @@ import static io.github.scf37.jpaq.TestTrees.assertSameTree;
 import static io.github.scf37.jpaq.TestTrees.fill;
 import static org.junit.jupiter.api.Assertions.*;
 
+import io.github.scf37.jpaq.Storage.Capability;
+import io.github.scf37.jpaq.ZpaqArchive.AddResult;
+import io.github.scf37.jpaq.ZpaqArchive.ArchiveSelector;
+import io.github.scf37.jpaq.ZpaqArchive.ExtractResult;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
+import io.github.scf37.jpaq.ZpaqArchive.Option;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -11,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,21 +26,27 @@ import org.junit.jupiter.api.io.TempDir;
 class SequentialArchiveTest {
   /** The archive arc???.jpaq in st; local names relative to dir. */
   static ZpaqArchive seq(Storage st, Path dir) {
-    return ZpaqArchive.of(st, "arc???.jpaq").withFormat(Format.SEQUENTIAL).withThreads(2)
-        .withDirectory(dir);
+    return ZpaqArchive.of(st, "arc???.jpaq", Format.SEQUENTIAL, Option.threads(2),
+        Option.directory(dir));
   }
 
   /** Adds the local tree "src" with the given index and new index. */
   static AddResult backup(ZpaqArchive a, String index, String indexOut) throws IOException {
-    return a.add(AddOptions.of("src").withIndex(index).withIndexOut(indexOut));
+    return a.add(b -> b.files("src").index(index).indexOut(indexOut));
   }
 
   /** Extracts everything under the local directory out. */
-  static ExtractResult restore(ZpaqArchive a, ReadOptions ro, String out) throws IOException {
-    return a.extract(new ExtractOptions(ro, ExtractOptions.under(out), false, false));
+  static ExtractResult restore(ZpaqArchive a, Consumer<ArchiveSelector<?>> select, String out)
+      throws IOException {
+    return a.extract(x -> select.accept(x.under(out)));
   }
 
-  static ArchiveEntry entry(ArchiveContents c, String name) {
+  /** Reads the file list from the index {@code name}. */
+  static Consumer<ArchiveSelector<?>> index(String name) {
+    return s -> s.index(name);
+  }
+
+  static ArchiveContents.Entry entry(ArchiveContents c, String name) {
     return c.entries().stream().filter(e -> e.name().equals(name)).findFirst().orElseThrow();
   }
 
@@ -71,7 +84,7 @@ class SequentialArchiveTest {
     assertTrue(st.log.stream().noneMatch(s -> s.startsWith("exists")), st.log.toString());
 
     // list and extract from the index; tomes are read through streams
-    ReadOptions ro = ReadOptions.LATEST.withIndex("idx2.jpaq");
+    var ro = index("idx2.jpaq");
     ArchiveContents c = a.read(ro);
     assertEquals(2, c.versions().size());
     assertEquals(8000, entry(c, "src/new.txt").size());
@@ -85,7 +98,7 @@ class SequentialArchiveTest {
     MemStorage st = new MemStorage(Capability.PROBE);
     Path src = dir.resolve("src");
     fill(src, 7, 5);
-    ZpaqArchive a = seq(st, dir).withKey(key);
+    ZpaqArchive a = seq(st, dir).withOptions(Option.key(key));
     assertEquals(0, backup(a, null, "idx1.jpaq").unreadable());
     Files.write(src.resolve("f2.bin"), "second version".repeat(20000).getBytes());
     Files.delete(src.resolve("f0.bin"));
@@ -100,16 +113,15 @@ class SequentialArchiveTest {
     ZpaqArchive a = seq(st, dir);
 
     // the tomes alone are enough (needs PROBE to find the parts)
-    assertEquals(0, restore(a, ReadOptions.LATEST, "out").failed());
+    assertEquals(0, restore(a, s -> { }, "out").failed());
     assertSameTree(src, dir.resolve("out/src"));
 
     // an index rebuilt from the tomes is the index that was written
-    a.writeIndex("rebuilt.jpaq", false, ReadOptions.LATEST);
+    a.writeIndex("rebuilt.jpaq", i -> { });
     assertArrayEquals(st.files.get("idx2.jpaq"), st.files.get("rebuilt.jpaq"));
 
     // older version through the index
-    assertEquals(0, restore(a, ReadOptions.LATEST.withIndex("idx2.jpaq").withVersion(1L), "old")
-        .failed());
+    assertEquals(0, restore(a, index("idx2.jpaq").andThen(s -> s.version(1)), "old").failed());
     assertTrue(Files.exists(dir.resolve("old/src/f0.bin")));
   }
 
@@ -117,18 +129,18 @@ class SequentialArchiveTest {
   void encrypted(@TempDir Path dir) throws Exception {
     MemStorage st = twoVersions(dir, "secret");
     Path src = dir.resolve("src");
-    ZpaqArchive a = seq(st, dir).withKey("secret");
-    assertEquals(0, restore(a, ReadOptions.LATEST.withIndex("idx2.jpaq"), "out").failed());
+    ZpaqArchive a = seq(st, dir).withOptions(Option.key("secret"));
+    assertEquals(0, restore(a, index("idx2.jpaq"), "out").failed());
     assertSameTree(src, dir.resolve("out/src"));
-    assertEquals(0, restore(a, ReadOptions.LATEST, "out2").failed());
+    assertEquals(0, restore(a, s -> { }, "out2").failed());
     assertSameTree(src, dir.resolve("out2/src"));
-    a.writeIndex("rebuilt.jpaq", false, ReadOptions.LATEST);
+    a.writeIndex("rebuilt.jpaq", i -> { });
     assertArrayEquals(st.files.get("idx2.jpaq"), st.files.get("rebuilt.jpaq"));
     // not readable with a wrong key or without one
     var e = assertThrows(ArchiveException.class,
-        () -> a.withKey("nope").read(ReadOptions.LATEST.withIndex("idx2.jpaq")));
+        () -> a.withOptions(Option.key("nope")).read(index("idx2.jpaq")));
     assertEquals("password incorrect", e.getMessage());
-    assertThrows(ArchiveException.class, () -> a.withKey(null).read(ReadOptions.LATEST));
+    assertThrows(ArchiveException.class, () -> a.withOptions(Option.key(null)).read());
   }
 
   @Test
@@ -136,7 +148,7 @@ class SequentialArchiveTest {
     MemStorage st = twoVersions(dir, null);
     byte[] t2 = st.files.get("arc002.jpaq");
     st.files.put("arc002.jpaq", Arrays.copyOf(t2, t2.length / 2));  // upload died midway
-    ArchiveContents c = seq(st, dir).read(ReadOptions.LATEST);
+    ArchiveContents c = seq(st, dir).read();
     assertEquals(1, c.versions().size());
     assertNotNull(entry(c, "src/f0.bin"));
   }
@@ -150,7 +162,7 @@ class SequentialArchiveTest {
     ZpaqArchive a = seq(st, dir);
     assertTrue(backup(a, "idx2.jpaq", "idx3.jpaq").changed());
     assertTrue(st.files.get("arc003.jpaq").length > 100);
-    assertEquals(0, restore(a, ReadOptions.LATEST.withIndex("idx3.jpaq"), "out").failed());
+    assertEquals(0, restore(a, index("idx3.jpaq"), "out").failed());
     assertSameTree(dir.resolve("src"), dir.resolve("out/src"));
   }
 
@@ -159,32 +171,33 @@ class SequentialArchiveTest {
     fill(dir.resolve("src"), 3, 2);
     // the classic format needs more than streams
     var e = assertThrows(UnsupportedStorageException.class,
-        () -> ZpaqArchive.of(new MemStorage(), "x.zpaq").withDirectory(dir).add(AddOptions.of("src")));
+        () -> ZpaqArchive.of(new MemStorage(), "x.zpaq", Option.directory(dir))
+            .add(b -> b.files("src")));
     assertEquals(Capability.RANDOM_WRITE, e.missing());
     var e2 = assertThrows(UnsupportedStorageException.class,
-        () -> ZpaqArchive.of(new MemStorage(Capability.RANDOM_WRITE), "x.zpaq").withDirectory(dir)
-            .add(AddOptions.of("src")));
+        () -> ZpaqArchive.of(new MemStorage(Capability.RANDOM_WRITE), "x.zpaq",
+            Option.directory(dir)).add(b -> b.files("src")));
     assertEquals(Capability.PROBE, e2.missing());
     // multi part names can't be read without PROBE unless an index tells the parts
     assertThrows(UnsupportedStorageException.class,
-        () -> ZpaqArchive.of(new MemStorage(), "a???.jpaq").read(ReadOptions.LATEST));
+        () -> ZpaqArchive.of(new MemStorage(), "a???.jpaq").read());
 
     // a sequential update of a classic archive fails, and so does the opposite
-    LocalFsStorage local = new LocalFsStorage(dir);
-    ZpaqArchive.of(local, "classic.zpaq").withDirectory(dir).add(AddOptions.of("src"));
-    var bad = assertThrows(ArchiveException.class, () -> ZpaqArchive.of(local, "classic??.zpaq")
-        .withFormat(Format.SEQUENTIAL).withDirectory(dir)
-        .add(AddOptions.of("src").withIndex("classic.zpaq").withIndexOut("ci.jpaq")));
+    Storage local = Storage.ofDirectory(dir);
+    ZpaqArchive.of(local, "classic.zpaq", Option.directory(dir)).add(b -> b.files("src"));
+    var bad = assertThrows(ArchiveException.class, () -> ZpaqArchive.of(local, "classic??.zpaq",
+        Format.SEQUENTIAL, Option.directory(dir))
+        .add(b -> b.files("src").index("classic.zpaq").indexOut("ci.jpaq")));
     assertTrue(bad.getMessage().contains("zpaq format"), bad.getMessage());
-    LocalFsStorage seqDir = new LocalFsStorage(Files.createDirectories(dir.resolve("seq")));
+    Storage seqDir = Storage.ofDirectory(Files.createDirectories(dir.resolve("seq")));
     backup(seq(seqDir, dir), null, "idx1.jpaq");
-    var bad2 = assertThrows(ArchiveException.class, () -> ZpaqArchive.of(seqDir, "arc???.jpaq")
-        .withDirectory(dir).add(AddOptions.of("src")));
+    var bad2 = assertThrows(ArchiveException.class, () -> ZpaqArchive.of(seqDir, "arc???.jpaq",
+        Option.directory(dir)).add(b -> b.files("src")));
     assertTrue(bad2.getMessage().contains("jpaq sequential"), bad2.getMessage());
 
     // the tomes of a sequential archive need a part number in the name
-    assertThrows(IllegalArgumentException.class, () -> ZpaqArchive.of(seqDir, "one.jpaq")
-        .withFormat(Format.SEQUENTIAL).add(AddOptions.of("src").withIndexOut("i.jpaq")));
+    assertThrows(IllegalArgumentException.class, () -> ZpaqArchive.of(seqDir, "one.jpaq",
+        Format.SEQUENTIAL).add(b -> b.files("src").indexOut("i.jpaq")));
   }
 
   @Test
@@ -193,8 +206,8 @@ class SequentialArchiveTest {
     MemStorage ranged = new MemStorage(Capability.PROBE, Capability.RANGED_READ);
     ranged.files.putAll(plain.files);
     // extract only a file of the second version: the first tome is not needed
-    ReadOptions ro = ReadOptions.LATEST.withIndex("idx2.jpaq").withSelect(n -> n.equals("src/f2.bin"));
-    ExtractResult x = restore(seq(ranged, dir).withThreads(1), ro, "out");
+    ExtractResult x = restore(seq(ranged, dir).withOptions(Option.threads(1)),
+        s -> s.index("idx2.jpaq").select(n -> n.equals("src/f2.bin")), "out");
     assertEquals(1, x.files(), x.toString());
     assertArrayEquals(Files.readAllBytes(dir.resolve("src/f2.bin")),
         Files.readAllBytes(dir.resolve("out/src/f2.bin")));
@@ -206,11 +219,11 @@ class SequentialArchiveTest {
   void backupAndRestoreOverShellCommands(@TempDir Path dir) throws Exception {
     // storage as three shell commands over a directory: the archiver only sees streams
     Path store = Files.createDirectory(dir.resolve("store"));
-    var st = new ShellStorage("cat \"$1\"", "cat > \"$1\"", "rm -f \"$1\"", store);
+    var st = Storage.ofShell(store, "cat \"$1\"", "cat > \"$1\"", "rm -f \"$1\"");
     Path src = dir.resolve("src");
     fill(src, 11, 4);
-    ZpaqArchive a = ZpaqArchive.of(st, "data???.jpaq").withFormat(Format.SEQUENTIAL)
-        .withKey("pw").withThreads(2).withDirectory(dir);
+    ZpaqArchive a = ZpaqArchive.of(st, "data???.jpaq", Format.SEQUENTIAL, Option.key("pw"),
+        Option.threads(2), Option.directory(dir));
     AddResult r1 = backup(a, null, "index-1.jpaq");
     assertEquals(8, r1.added(), "4 files, sub/deep/t.txt and 3 directories");
     Files.writeString(src.resolve("f1.bin"), "changed".repeat(5000));
@@ -219,13 +232,13 @@ class SequentialArchiveTest {
       assertEquals(List.of("data001.jpaq", "data002.jpaq", "index-1.jpaq", "index-2.jpaq"),
           s.map(p -> p.getFileName().toString()).sorted().toList());
     }
-    ReadOptions ro = ReadOptions.LATEST.withIndex("index-2.jpaq");
+    var ro = index("index-2.jpaq");
     assertEquals(25000, entry(a.read(ro), "src/sub/deep/t.txt").size());
     assertEquals(0, restore(a, ro, "restored").failed());
     assertSameTree(src, dir.resolve("restored/src"));
-    assertTrue(a.extract(ExtractOptions.DEFAULT.withRead(ro).withTest(true)).ok());
-    assertThrows(ArchiveException.class, () -> a.withKey("wrong").read(ro));
-    assertThrows(ArchiveException.class, () -> a.read(ReadOptions.LATEST.withIndex("nope.jpaq")));
+    assertTrue(a.extract(x -> ro.accept(x.test(true))).ok());
+    assertThrows(ArchiveException.class, () -> a.withOptions(Option.key("wrong")).read(ro));
+    assertThrows(ArchiveException.class, () -> a.read(index("nope.jpaq")));
   }
 
   /** Stock C++ zpaq (set ZPAQ_CPP to its path) must not find anything in jpaq archives. */

@@ -7,27 +7,16 @@ import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.EnumSet;
 import java.util.Set;
 
-/** Archive files in a directory of the local file system, with all capabilities. */
-public final class LocalFsStorage implements Storage {
+/** {@link Storage#ofDirectory}. */
+final class DirectoryStorage implements Storage {
   private final Path base;
-  private final boolean atomicWrite;
 
   /** Relative names resolve against {@code base} (null = the process working directory). */
-  public LocalFsStorage(Path base) {
-    this(base, false);
-  }
-
-  /**
-   * @param atomicWrite write into a temporary file and move it into place on close, so a reader
-   *     never sees a half written file (and a failed write leaves the old file)
-   */
-  public LocalFsStorage(Path base, boolean atomicWrite) {
+  DirectoryStorage(Path base) {
     this.base = base;
-    this.atomicWrite = atomicWrite;
   }
 
   private Path path(String name) {
@@ -56,30 +45,7 @@ public final class LocalFsStorage implements Storage {
   public OutputStream write(String name) throws IOException {
     Path p = path(name);
     checkNotDirectory(p, name);
-    if (!atomicWrite) return Files.newOutputStream(p);
-    Path tmp = p.resolveSibling(p.getFileName() + ".tmp");
-    OutputStream o = Files.newOutputStream(tmp);
-    return new OutputStream() {
-      private boolean closed;
-
-      @Override
-      public void write(int b) throws IOException {
-        o.write(b);
-      }
-
-      @Override
-      public void write(byte[] b, int off, int len) throws IOException {
-        o.write(b, off, len);
-      }
-
-      @Override
-      public void close() throws IOException {
-        if (closed) return;
-        closed = true;
-        o.close();
-        Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-      }
-    };
+    return Files.newOutputStream(p);
   }
 
   @Override

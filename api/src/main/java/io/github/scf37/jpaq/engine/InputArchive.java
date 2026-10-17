@@ -1,6 +1,6 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.Capability;
+import io.github.scf37.jpaq.Storage.Capability;
 import io.github.scf37.jpaq.UnsupportedStorageException;
 import io.github.scf37.jpaq.libzpaq.AesCtr;
 import io.github.scf37.jpaq.libzpaq.Crypto;

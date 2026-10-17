@@ -90,12 +90,12 @@ final class Fs {
   /** Prints "filename: error message" to stderr (perror). */
   void printerr(String filename, Exception e) {
     String reason = strerror(e);
-    ctx.emit(new io.github.scf37.jpaq.Event.FileError(Ctx.t(filename), reason, e));
+    ctx.emit(io.github.scf37.jpaq.Event.FileError.of(Ctx.t(filename), reason, e));
   }
 
   /** Prints "filename: error message" for the most recent failure. */
   void printerr(String filename, String message) {
-    ctx.emit(new io.github.scf37.jpaq.Event.FileError(Ctx.t(filename), message, null));
+    ctx.emit(io.github.scf37.jpaq.Event.FileError.of(Ctx.t(filename), message, null));
   }
 
   /** File status as returned by lstat(). */

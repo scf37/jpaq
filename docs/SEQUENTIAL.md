@@ -37,7 +37,7 @@ An update writes the tome, closes it (the commit of the upload), and only then w
 caller keeps the previous index until the new one is stored:
 
 * the index is never written under the name of an older one: an update with
-  `AddOptions.withIndex("idx-41").withIndexOut("idx-42")` reads the old index, copies it and appends the new segment under the new name;
+  `add(b -> b.index("idx-41").indexOut("idx-42"))` reads the old index, copies it and appends the new segment under the new name;
 * a tome that was uploaded but is not in any index (failed upload, crash before the index) is an orphan:
   it is ignored and overwritten by the next update, which gets the same name (the tome number is the number
   of versions in the index + 1);
@@ -49,7 +49,7 @@ the caller says whether an index exists by passing its name, tome numbers come f
 
 ## Reading
 
-* **With the index** (`ReadOptions.withIndex`, for reading and extracting): file list and fragment table come from the index
+* **With the index** (`ArchiveSelector.index`, for reading and extracting): file list and fragment table come from the index
   (one sequential read). The data blocks of tomes are read in archive order, in parallel decompression;
   tomes (and with `RANGED_READ` parts of tomes) that hold nothing wanted are not transferred. Offsets
   and sizes of the tomes come from the index: the position of a block in tome *k* is the header plus the sum
