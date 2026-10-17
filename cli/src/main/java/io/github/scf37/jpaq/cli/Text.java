@@ -1,24 +1,24 @@
 package io.github.scf37.jpaq.cli;
 
-import io.github.scf37.jpaq.Names;
+import io.github.scf37.jpaq.ZpaqArchive;
 import java.nio.charset.StandardCharsets;
 
 /**
  * Text of the command line. Arguments, names and output are "byte strings" (a String whose chars
  * are the bytes 0..255), like the char* of the C++ program: patterns match bytes, output is the
- * bytes of the names. The API takes and gives real strings ({@link Names}).
+ * bytes of the names. The API takes and gives real strings ({@link ZpaqArchive#decodeName}).
  */
 final class Text {
   private Text() {}
 
   /** Byte string of a real string. */
   static String bytes(String s) {
-    return new String(Names.encode(s), StandardCharsets.ISO_8859_1);
+    return new String(ZpaqArchive.encodeName(s), StandardCharsets.ISO_8859_1);
   }
 
   /** Real string of a byte string. */
   static String text(String b) {
-    return Names.decode(b.getBytes(StandardCharsets.ISO_8859_1));
+    return ZpaqArchive.decodeName(b.getBytes(StandardCharsets.ISO_8859_1));
   }
 
   /** char at i or 0 past the end, like reading a NUL terminated C string. */

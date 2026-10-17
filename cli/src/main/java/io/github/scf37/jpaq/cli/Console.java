@@ -89,12 +89,15 @@ final class Console implements Consumer<Event> {
         if (details) print("- " + bytes(e.name()) + "\n");
       }
       case Event.AddSummary e -> print(f("%d +added, %d -removed.\n", e.added(), e.removed()));
-      case Event.AddTotals e -> eprint(f("\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n",
-          mb(e.headerOffset()), mb(e.inputBytes()), mb(e.dedupedBytes()), mb(e.addedBytes()),
-          mb(e.archiveBytes())));
-      case Event.StreamingAddTotals e -> print(f("%1.0f + (%1.0f -> %1.0f) = %1.0f\n",
-          (double) e.headerOffset(), (double) e.inputBytes(), (double) e.addedBytes(),
-          (double) e.archiveBytes()));
+      case Event.AddTotals e -> {
+        if (e.streaming()) {
+          print(f("%1.0f + (%1.0f -> %1.0f) = %1.0f\n", (double) e.headerOffset(),
+              (double) e.inputBytes(), (double) e.addedBytes(), (double) e.archiveBytes()));
+        } else {
+          eprint(f("\n%1.6f + (%1.6f -> %1.6f -> %1.6f) = %1.6f MB\n", mb(e.headerOffset()),
+              mb(e.inputBytes()), mb(e.dedupedBytes()), mb(e.addedBytes()), mb(e.archiveBytes())));
+        }
+      }
       case Event.ArchiveTruncated e -> print(f("truncating archive from %1.0f to %1.0f\n",
           (double) e.from(), (double) e.to()));
       case Event.ArchiveDeleted e -> print("deleted " + bytes(e.name()) + "\n");

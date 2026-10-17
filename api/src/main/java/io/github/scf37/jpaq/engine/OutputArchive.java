@@ -1,6 +1,6 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.Format;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
 import io.github.scf37.jpaq.libzpaq.AesCtr;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.ZpaqException;

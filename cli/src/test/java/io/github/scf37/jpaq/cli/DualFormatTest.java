@@ -2,11 +2,11 @@ package io.github.scf37.jpaq.cli;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import io.github.scf37.jpaq.AddOptions;
 import io.github.scf37.jpaq.ArchiveException;
-import io.github.scf37.jpaq.Format;
-import io.github.scf37.jpaq.LocalFsStorage;
+import io.github.scf37.jpaq.Storage;
 import io.github.scf37.jpaq.ZpaqArchive;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
+import io.github.scf37.jpaq.ZpaqArchive.Option;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,9 +19,9 @@ class DualFormatTest {
   /** A sequential archive of {@code src} written through the library, as a backup tool would. */
   private static void sequential(Path dir, String name, String indexOut, Path src, Instant date)
       throws IOException {
-    ZpaqArchive a = ZpaqArchive.of(new LocalFsStorage(dir), name).withFormat(Format.SEQUENTIAL)
-        .withThreads(1).withDirectory(src.getParent());
-    a.add(AddOptions.of("src").withIndexOut(indexOut).withDate(date));
+    ZpaqArchive a = ZpaqArchive.of(Storage.ofDirectory(dir), name, Format.SEQUENTIAL,
+        Option.threads(1), Option.directory(src.getParent()));
+    a.add(b -> b.files("src").indexOut(indexOut).date(date));
   }
 
   @Test
@@ -72,9 +72,9 @@ class DualFormatTest {
     assertEquals(0, test.exitCode(), test.stderr());
 
     // the library does not mix the formats either
-    assertThrows(ArchiveException.class, () -> ZpaqArchive.of(new LocalFsStorage(dir), "plain??.zpaq")
-        .withFormat(Format.SEQUENTIAL).withDirectory(dir)
-        .add(AddOptions.of("src").withIndex("plain.zpaq").withIndexOut("ci.jpaq")));
+    assertThrows(ArchiveException.class, () -> ZpaqArchive.of(Storage.ofDirectory(dir),
+        "plain??.zpaq", Format.SEQUENTIAL, Option.directory(dir))
+        .add(add -> add.files("src").index("plain.zpaq").indexOut("ci.jpaq")));
   }
 
   private static final byte[] TAG = {0x37, 0x6b, 0x53, 0x74, (byte) 0xa0, 0x31, (byte) 0x83,

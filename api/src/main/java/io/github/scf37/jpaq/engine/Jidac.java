@@ -1,12 +1,8 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.ArchiveEntry;
-import io.github.scf37.jpaq.ArchiveVersion;
-import io.github.scf37.jpaq.Attributes;
 import io.github.scf37.jpaq.Event;
-import io.github.scf37.jpaq.LocalFile;
-import io.github.scf37.jpaq.Format;
 import io.github.scf37.jpaq.Storage;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
 import io.github.scf37.jpaq.libzpaq.Decompresser;
 import io.github.scf37.jpaq.libzpaq.Dialect;
 import io.github.scf37.jpaq.libzpaq.MemoryBuffer;
@@ -175,7 +171,7 @@ public final class Jidac {
       jidac.version = DEFAULT_VERSION;
       jidac.readArchive(archive, null);
       version += jidac.ver.size() - 1;
-      ctx.emit(new Event.VersionSelected(version));
+      ctx.emit(Event.VersionSelected.of(version));
     }
   }
 
@@ -223,25 +219,34 @@ public final class Jidac {
     readArchive(fromIndex() ? readIndex : archive, null);
   }
 
+  /** Receives the entries of an archive or local files; names are real text. */
+  @FunctionalInterface
+  public interface EntrySink {
+    void accept(String name, long date, long size, long attributes, int[] fragments);
+  }
+
+  /** Receives the versions of an archive. */
+  @FunctionalInterface
+  public interface VersionSink {
+    void accept(int number, long date, int updates, int deletes, long offset, int firstFragment);
+  }
+
   /** The entries read, in name order: present ones, or all with -all (deletions have date 0). */
-  public List<ArchiveEntry> entries() {
-    List<ArchiveEntry> r = new ArrayList<>();
+  public void entries(EntrySink sink) {
     for (DT p : dt.values()) {
       if (p.date() == 0 && all == 0) continue;
       int[] f = new int[p.ptrSize()];
       for (int i = 0; i < f.length; i++) f[i] = p.ptr(i);
-      r.add(new ArchiveEntry(Strs.fromBytes(p.name()), p.date(), p.size(), new Attributes(p.attr()), f));
+      sink.accept(Strs.fromBytes(p.name()), p.date(), p.size(), p.attr(), f);
     }
-    return r;
   }
 
-  public List<ArchiveVersion> versions() {
-    List<ArchiveVersion> r = new ArrayList<>();
+  /** The versions read, oldest first. */
+  public void versions(VersionSink sink) {
     for (int i = 1; i < ver.size(); i++) {
       Ver v = ver.get(i);
-      r.add(new ArchiveVersion(i, v.date, v.updates, v.deletes, v.offset, v.firstFragment));
+      sink.accept(i, v.date, v.updates, v.deletes, v.offset, v.firstFragment);
     }
-    return r;
   }
 
   /** Number of fragment IDs (fragment 0 is not used). */
@@ -278,13 +283,11 @@ public final class Jidac {
     return p != null && new Extractor(this).equal(p, localName);
   }
 
-  /** Scans the roots (pruned, accepted) and returns the local files and directories found. */
-  public List<LocalFile> scanLocal() {
+  /** Scans the roots (pruned, accepted) and passes the local files and directories found. */
+  public void scanLocal(EntrySink sink) {
     for (String f : roots) scandir(f);
-    List<LocalFile> r = new ArrayList<>();
     for (DT p : edt.values())
-      r.add(new LocalFile(Strs.fromBytes(p.name()), p.date(), p.size(), new Attributes(p.attr())));
-    return r;
+      sink.accept(Strs.fromBytes(p.name()), p.date(), p.size(), p.attr(), new int[0]);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -314,12 +317,12 @@ public final class Jidac {
     InputArchive in = new InputArchive(io, arc, password);
     if (!in.isOpen()) {
       if (command != 'a') {
-        ctx.emit(new Event.ArchiveNotFound(Ctx.t(arc)));
+        ctx.emit(Event.ArchiveNotFound.of(Ctx.t(arc)));
         if (errors != null) ++errors[0];
       }
       return 0;
     }
-    ctx.emit(new Event.ArchiveReading(Ctx.t(arc), version == DEFAULT_VERSION ? -1 : version));
+    ctx.emit(Event.ArchiveReading.of(Ctx.t(arc), version == DEFAULT_VERSION ? -1 : version));
 
     // Test password
     {
@@ -441,7 +444,7 @@ public final class Jidac {
                   final long skew = adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0;
                   dataOffset = dataOffsetReal + skew;
                   final long jmp = adia == Dialect.JPAQ ? 0 : btol(osd, 0);
-                  if (jmp < 0) ctx.emit(new Event.IncompleteTransaction());
+                  if (jmp < 0) ctx.emit(Event.IncompleteTransaction.of());
                   if (jmp < 0
                       || (version < 19000000000000L && (long) ver.size() > version)
                       || (version >= 19000000000000L && version < fdate)) {
@@ -612,7 +615,7 @@ public final class Jidac {
         }  // endblock
       } catch (RuntimeException | OutOfMemoryError e) {
         in.seek(-d.buffered(), InputArchive.Whence.CUR);
-        ctx.emit(new Event.BlockSkipped(blockOffset, Ctx.t(what(e))));
+        ctx.emit(Event.BlockSkipped.of(blockOffset, Ctx.t(what(e))));
         if (errors != null) ++errors[0];
       }
     }  // end while !done
@@ -623,7 +626,7 @@ public final class Jidac {
       // A transaction that never got its file list was not committed
       Ver lv = ver.get(ver.size() - 1);
       if (lv.updates + lv.deletes == 0) {
-        ctx.emit(new Event.IncompleteTransaction());
+        ctx.emit(Event.IncompleteTransaction.of());
         ver.remove(ver.size() - 1);
         ht.truncate(lv.firstFragment);
         while (block.size() > 0 && block.get(block.size() - 1).start >= lv.firstFragment)
@@ -632,7 +635,7 @@ public final class Jidac {
     }
     readDialect = adia;
     virtualEnd = blockOffset + (adia == Dialect.JPAQ || asIndex ? dhsize - dcsize : 0);
-    ctx.emit(new Event.ArchiveRead(ver.size() - 1, nfiles, ht.size() - 1, blockOffset));
+    ctx.emit(Event.ArchiveRead.of(ver.size() - 1, nfiles, ht.size() - 1, blockOffset));
 
     // Calculate file sizes
     for (DT p : dt.unordered()) {

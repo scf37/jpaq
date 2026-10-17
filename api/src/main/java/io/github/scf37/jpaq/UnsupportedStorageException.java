@@ -1,5 +1,7 @@
 package io.github.scf37.jpaq;
 
+import io.github.scf37.jpaq.Storage.Capability;
+
 /** The storage lacks a capability that the requested archive format or command needs. */
 public final class UnsupportedStorageException extends RuntimeException {
   private static final long serialVersionUID = 1L;

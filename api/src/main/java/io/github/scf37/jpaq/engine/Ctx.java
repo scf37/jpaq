@@ -42,12 +42,12 @@ public final class Ctx {
 
   /** Information to show (stdout of zpaq). */
   void note(String text) {
-    emit(new Event.Note(t(text)));
+    emit(Event.Note.of(t(text)));
   }
 
   /** A diagnostic (stderr of zpaq). */
   void diagnostic(String text) {
-    emit(new Event.Diagnostic(t(text)));
+    emit(Event.Diagnostic.of(t(text)));
   }
 
   /** Milliseconds since the operation started. */
@@ -73,7 +73,7 @@ public final class Ctx {
     if (td > ts) td = ts;
     if (td >= 1000000) {
       double eta = 0.001 * elapsedMillis() * (ts - td) / (td + 1.0);
-      emit(new Event.Progress(td * 100.0 / (ts + 0.5), (int) eta));
+      emit(Event.Progress.of(td * 100.0 / (ts + 0.5), (int) eta));
     }
   }
 

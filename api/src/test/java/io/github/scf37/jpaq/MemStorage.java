@@ -1,7 +1,5 @@
 package io.github.scf37.jpaq;
 
-import io.github.scf37.jpaq.Capability;
-import io.github.scf37.jpaq.Storage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;

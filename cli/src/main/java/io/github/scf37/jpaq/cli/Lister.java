@@ -3,12 +3,10 @@ package io.github.scf37.jpaq.cli;
 import static io.github.scf37.jpaq.cli.Text.f;
 
 import io.github.scf37.jpaq.ArchiveContents;
-import io.github.scf37.jpaq.ArchiveEntry;
-import io.github.scf37.jpaq.ArchiveVersion;
-import io.github.scf37.jpaq.LocalFile;
-import io.github.scf37.jpaq.LocalFiles;
-import io.github.scf37.jpaq.ReadOptions;
+import io.github.scf37.jpaq.ArchiveContents.Entry;
+import io.github.scf37.jpaq.ArchiveContents.Version;
 import io.github.scf37.jpaq.ZpaqArchive;
+import io.github.scf37.jpaq.ZpaqArchive.LocalFile;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -38,10 +36,10 @@ final class Lister {
     long size;
     final long attr;
     final int[] ptr;
-    final ArchiveEntry entry;  // null for external files and version directories
+    final Entry entry;  // null for external files and version directories
     char data;                 // comparison result
 
-    Row(String name, long date, long size, long attr, int[] ptr, ArchiveEntry entry) {
+    Row(String name, long date, long size, long attr, int[] ptr, Entry entry) {
       this.name = name;
       this.date = date;
       this.size = size;
@@ -97,22 +95,19 @@ final class Lister {
   int list(ZpaqArchive archive) throws IOException {
     // Read archive into dt, which may be "" for empty.
     TreeMap<String, Row> dt = new TreeMap<>();
-    List<ArchiveVersion> versions = List.of();
+    List<Version> versions = List.of();
     ArchiveContents contents = null;
     long csize = 0;
     if (!a.archive.isEmpty()) {
-      ReadOptions ro = ReadOptions.LATEST.withVersionDigits(a.all)
-          .withSelect(n -> a.isselected(Text.bytes(n), true)).withNoAttributes(a.noattributes);
-      if (a.version != Args.DEFAULT_VERSION) ro = CommandLine.until(ro, a.version);
-      contents = archive.read(ro);
+      contents = archive.read(CommandLine.selection(a, true));
       csize = contents.end();
       versions = contents.versions();
-      for (ArchiveEntry e : contents.entries()) {
+      for (Entry e : contents.entries()) {
         String n = Text.bytes(e.name());
         dt.put(n, new Row(n, e.date(), e.size(), e.attributes().raw(), e.fragments(), e));
       }
       if (a.all != 0) {  // version directories
-        for (ArchiveVersion v : versions) {
+        for (Version v : versions) {
           String fn = a.rename(Text.itos(v.number(), a.all) + "/");
           if (!a.isselected(fn, false)) continue;
           Row r = dt.get(fn);
@@ -126,8 +121,8 @@ final class Lister {
     TreeMap<String, Row> edt = new TreeMap<>();
     if (!a.files.isEmpty()) {
       List<String> roots = a.files.stream().map(Text::text).toList();
-      for (LocalFile lf : LocalFiles.scan(workDir, roots, n -> a.excluded(Text.bytes(n)),
-          n -> a.isselected(Text.bytes(n), false), a.noattributes, out)) {
+      for (LocalFile lf : archive.scan(s -> s.files(roots).prune(n -> a.excluded(Text.bytes(n)))
+          .accept(n -> a.isselected(Text.bytes(n), false)).noAttributes(a.noattributes))) {
         String n = Text.bytes(lf.name());
         edt.put(n, new Row(n, lf.date(), lf.size(), lf.attributes().raw(), new int[0], null));
       }
@@ -232,7 +227,7 @@ final class Lister {
         int v;  // list version updates, deletes, compressed size
         if (a.all > 0 && pname.length() == a.all + 1 && (v = Text.atoi(pname)) > 0
             && v <= versions.size()) {  // version info
-          ArchiveVersion vr = versions.get(v - 1);
+          Version vr = versions.get(v - 1);
           t.append(f(" +%d -%d -> %1.0f", vr.updates(), vr.deletes(),
               (v < versions.size() ? versions.get(v).offset() : csize) - vr.offset() + 0.0));
           if (a.summary < 0)  // print fragment range

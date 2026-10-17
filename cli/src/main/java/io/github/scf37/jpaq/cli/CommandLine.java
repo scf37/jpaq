@@ -3,11 +3,10 @@ package io.github.scf37.jpaq.cli;
 import static io.github.scf37.jpaq.cli.Text.bytes;
 import static io.github.scf37.jpaq.cli.Text.text;
 
-import io.github.scf37.jpaq.AddOptions;
-import io.github.scf37.jpaq.ExtractOptions;
-import io.github.scf37.jpaq.LocalFsStorage;
-import io.github.scf37.jpaq.ReadOptions;
+import io.github.scf37.jpaq.Storage;
 import io.github.scf37.jpaq.ZpaqArchive;
+import io.github.scf37.jpaq.ZpaqArchive.ArchiveSelector;
+import io.github.scf37.jpaq.ZpaqArchive.Option;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -15,6 +14,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.function.Consumer;
 
 /** The zpaq 7.15 command line on top of the archive library. */
 final class CommandLine {
@@ -52,10 +52,10 @@ final class CommandLine {
     if (!((a.command == 'a' && a.files.size() > 0) || a.command == 'x' || a.command == 'l'))
       usage(out, a);
 
-    ZpaqArchive archive = ZpaqArchive.of(new LocalFsStorage(workDir), text(a.archive))
-        .withKey(a.key != null ? text(a.key) : null).withThreads(a.threads)
-        .withDirectory(workDir).withClock(Clock.fixed(instant(a.date), ZoneOffset.UTC))
-        .withListener(out);
+    ZpaqArchive archive = ZpaqArchive.of(Storage.ofDirectory(workDir), text(a.archive),
+        Option.key(a.key != null ? text(a.key) : null), Option.threads(a.threads),
+        Option.directory(workDir), Option.clock(Clock.fixed(instant(a.date), ZoneOffset.UTC)),
+        Option.listener(out));
     return switch (a.command) {
       case 'a' -> add(a, archive);
       case 'x' -> extract(a, archive);
@@ -63,25 +63,32 @@ final class CommandLine {
     };
   }
 
-  /** The version or date of -until, applied to read options. */
-  static ReadOptions until(ReadOptions o, long version) {
-    if (version > 9999999) return o.withDate(instant(version));
-    return o.withVersion(version);
+  /**
+   * The archive versions and entries of -all, -until and -noattributes; the names of the files
+   * and -only, -not ({@code addition}: the selection of add, else of extract).
+   */
+  static Consumer<ArchiveSelector<?>> selection(Args a, boolean addition) {
+    return s -> {
+      s.allVersions(a.all).select(n -> a.isselected(bytes(n), addition))
+          .noAttributes(a.noattributes);
+      if (a.version > 9999999 && a.version != Args.DEFAULT_VERSION) s.until(instant(a.version));
+      else if (a.version != Args.DEFAULT_VERSION) s.version(a.version);
+    };
   }
 
   private static int add(Args a, ZpaqArchive archive) throws IOException {
-    AddOptions o = new AddOptions(a.files.stream().map(Text::text).toList(),
-        n -> text(a.rename(bytes(n))),         // -to
-        n -> a.excluded(bytes(n)),             // -not: not even scanned
-        n -> a.isselected(bytes(n), false),    // files, -only, -not
-        n -> a.isselected(bytes(n), true),     // what the update is about in the archive
-        a.method, a.fragment, a.force, a.noattributes,
-        a.index != null ? text(a.index) : null, null, instant(a.date), null, null);
-    if (a.version != Args.DEFAULT_VERSION) {
-      o = a.version > 9999999 ? o.withRollbackDate(instant(a.version))
-          : o.withRollbackVersion(a.version);
-    }
-    return archive.add(o).unreadable() > 0 ? 1 : 0;
+    var r = archive.add(b -> {
+      b.files(a.files.stream().map(Text::text).toList())
+          .archiveName(n -> text(a.rename(bytes(n))))   // -to
+          .prune(n -> a.excluded(bytes(n)))              // -not: not even scanned
+          .accept(n -> a.isselected(bytes(n), false))    // files, -only, -not
+          .scope(n -> a.isselected(bytes(n), true))      // what the update is about in the archive
+          .method(a.method).fragment(a.fragment).force(a.force).noAttributes(a.noattributes)
+          .index(a.index != null ? text(a.index) : null).date(instant(a.date));
+      if (a.version > 9999999 && a.version != Args.DEFAULT_VERSION) b.rollback(instant(a.version));
+      else if (a.version != Args.DEFAULT_VERSION) b.rollback(a.version);
+    });
+    return r.unreadable() > 0 ? 1 : 0;
   }
 
   private static int extract(Args a, ZpaqArchive archive) throws IOException {
@@ -90,22 +97,23 @@ final class CommandLine {
       if (a.files.size() > 0 || a.tofiles.size() > 0 || a.onlyfiles.size() > 0 || a.noattributes
           || a.version != Args.DEFAULT_VERSION || !a.method.isEmpty())
         throw new Fatal("-repack -all does not allow partial copy");
-      archive.copy(text(a.repack), a.newKey != null ? text(a.newKey) : null, a.force);
+      archive.copy(text(a.repack), c -> c.key(a.newKey != null ? text(a.newKey) : null)
+          .overwrite(a.force));
       return 0;
     }
-    ReadOptions ro = ReadOptions.LATEST.withVersionDigits(a.all)
-        .withSelect(n -> a.isselected(bytes(n), false)).withNoAttributes(a.noattributes);
-    if (a.version != Args.DEFAULT_VERSION) ro = until(ro, a.version);
+    Consumer<ArchiveSelector<?>> select = selection(a, false);
     if (a.index != null) {
-      archive.writeIndex(text(a.index), a.force, ro);
+      archive.writeIndex(text(a.index), i -> select.accept(i.overwrite(a.force)));
       return 0;
     }
-    ExtractOptions o = new ExtractOptions(ro, n -> text(a.rename(bytes(n))), a.force, a.dotest);
     if (a.repack != null) {
-      archive.repack(text(a.repack), a.newKey != null ? text(a.newKey) : null, o);
+      archive.repack(text(a.repack), r -> select.accept(r.rename(n -> text(a.rename(bytes(n))))
+          .key(a.newKey != null ? text(a.newKey) : null).overwrite(a.force)));
       return 0;
     }
-    return archive.extract(o).failed() > 0 ? 1 : 0;
+    var r = archive.extract(x -> select.accept(x.output(n -> text(a.rename(bytes(n))))
+        .overwrite(a.force).test(a.dotest)));
+    return r.failed() > 0 ? 1 : 0;
   }
 
   /** Decimal date YYYYMMDDHHMMSS (UT) of an instant. */

@@ -1,10 +1,10 @@
 package io.github.scf37.jpaq.engine;
 
-import io.github.scf37.jpaq.Capability;
-import io.github.scf37.jpaq.Format;
-import io.github.scf37.jpaq.RandomFile;
+import io.github.scf37.jpaq.Storage.Capability;
+import io.github.scf37.jpaq.Storage.RandomFile;
 import io.github.scf37.jpaq.Storage;
 import io.github.scf37.jpaq.UnsupportedStorageException;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;

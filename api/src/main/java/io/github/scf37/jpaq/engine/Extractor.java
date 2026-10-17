@@ -164,7 +164,7 @@ final class Extractor {
       // Copy
       OutputArchive out = new OutputArchive(j.io, j.repack, j.newPassword, salt, 0);
       copy(in, out);
-      j.ctx.emit(new Event.ArchiveCopied(Ctx.t(j.archive), in.tell(), Ctx.t(j.repack), out.tell()));
+      j.ctx.emit(Event.ArchiveCopied.of(Ctx.t(j.archive), in.tell(), Ctx.t(j.repack), out.tell()));
       out.close();
       in.close();
       return 0;
@@ -207,11 +207,11 @@ final class Extractor {
         if (fn == null) continue;  // not wanted
         final boolean isdir = p.name().charAt(p.name().length() - 1) == '/';
         if (j.repack == null && !j.dotest && j.force && !isdir && equal(p, fn)) {
-          j.ctx.emit(new Event.FileSkipped(Ctx.t(fn), true));
+          j.ctx.emit(Event.FileSkipped.of(Ctx.t(fn), true));
           j.ctx.fs.setDateAttr(fn, p.date(), p.attr());
           ++skipped;
         } else if (j.repack == null && !j.dotest && !j.force && j.ctx.fs.exists(fn)) {  // exists, skip
-          j.ctx.emit(new Event.FileSkipped(Ctx.t(fn), false));
+          j.ctx.emit(Event.FileSkipped.of(Ctx.t(fn), false));
           ++skipped;
         } else if (isdir) {  // update directories later
           p.data(0);
@@ -222,7 +222,7 @@ final class Extractor {
           for (int i = 0; p.data() >= 0 && i < p.ptrSize(); ++i) {
             final int jj = p.ptr(i);  // fragment index
             if (jj == 0 || Integer.compareUnsigned(jj, j.ht.size()) >= 0 || j.ht.usize(jj) < -1) {
-              j.ctx.emit(new Event.BadFragments(Ctx.t(p.name())));
+              j.ctx.emit(Event.BadFragments.of(Ctx.t(p.name())));
               p.data(-1);  // skip
               continue;
             }
@@ -248,15 +248,15 @@ final class Extractor {
       }  // end if selected
     }  // end for
     if (!j.force && skipped > 0)
-      j.ctx.emit(new Event.SkippedSummary(skipped, false));
+      j.ctx.emit(Event.SkippedSummary.of(skipped, false));
     if (j.force && skipped > 0)
-      j.ctx.emit(new Event.SkippedSummary(skipped, true));
+      j.ctx.emit(Event.SkippedSummary.of(skipped, true));
 
     // Repack to new archive
     if (j.repack != null) return repack(sz);
 
     // Decompress archive in parallel
-    j.ctx.emit(new Event.ExtractPlan(job.totalSize, totalFiles, j.threads));
+    j.ctx.emit(Event.ExtractPlan.of(job.totalSize, totalFiles, j.threads));
     List<Thread> tid = new ArrayList<>();
     Thread feeder = null;
     if (!j.io.random) {
@@ -309,7 +309,7 @@ final class Extractor {
                   String outname = j.toOutput.apply(dtptr.name());
                   job.mutex.lock();
                   try {
-                    j.ctx.emit(new Event.FileExtracted(Ctx.t(outname)));
+                    j.ctx.emit(Event.FileExtracted.of(Ctx.t(outname)));
                     if (!j.dotest) {
                       j.ctx.fs.makepath(outname);
                       Exception[] err = new Exception[1];
@@ -359,7 +359,7 @@ final class Extractor {
       }
       if (outf != null) outf.close();
     }
-    if (segments > 0) j.ctx.emit(new Event.StreamingSegments(segments));
+    if (segments > 0) j.ctx.emit(Event.StreamingSegments.of(segments));
 
     // Wait for threads to finish
     for (Thread t : tid) joinThread(t);
@@ -387,12 +387,12 @@ final class Extractor {
         ++extracted;
         if (p.ptrSize() != (int) p.data()) {
           ++errors;
-          j.ctx.emit(new Event.ExtractFailed(Ctx.t(fn), (int) p.data(), p.ptrSize()));
+          j.ctx.emit(Event.ExtractFailed.of(Ctx.t(fn), (int) p.data(), p.ptrSize()));
         }
       }
     }
     if (errors > 0) {
-      j.ctx.emit(new Event.ExtractFailures(extracted, errors, job.maxMemory / 1000000,
+      j.ctx.emit(Event.ExtractFailures.of(extracted, errors, job.maxMemory / 1000000,
           tid.size()));
     }
     in.close();
@@ -468,7 +468,7 @@ final class Extractor {
       long n = end - in.tell();
       if (copy(in, out, n) != n) throw ZpaqException.error("EOF");  // copy H and I blocks
     }
-    j.ctx.emit(new Event.IndexWritten(Ctx.t(j.index), out.tell()));
+    j.ctx.emit(Event.IndexWritten.of(Ctx.t(j.index), out.tell()));
     out.close();
     in.close();
     return 0;
@@ -513,7 +513,7 @@ final class Extractor {
     }
     final long csizeBefore = csize;
     csize = out.tell() - dstart;
-    j.ctx.emit(new Event.RepackData(csizeBefore, csize));
+    j.ctx.emit(Event.RepackData.of(csizeBefore, csize));
 
     // Re-create referenced H blocks using latest date
     final long lastDate = j.ver.get(j.ver.size() - 1).date;
@@ -568,7 +568,7 @@ final class Extractor {
     }
 
     // Summarize result
-    j.ctx.emit(new Event.RepackWritten(Ctx.t(j.archive), sz, Ctx.t(j.repack), out.tell()));
+    j.ctx.emit(Event.RepackWritten.of(Ctx.t(j.archive), sz, Ctx.t(j.repack), out.tell()));
 
     // Rewrite C block
     out.seek(cstart, InputArchive.Whence.SET);
@@ -741,7 +741,7 @@ final class Extractor {
           job.mutex.lock();
           try {
             j.ctx.printProgress(job.totalSize, job.totalDone);
-            j.ctx.emit(new Event.BlockExtracted(b.start, b.start + b.size - 1, out.size()));
+            j.ctx.emit(Event.BlockExtracted.of(b.start, b.start + b.size - 1, out.size()));
           } finally {
             job.mutex.unlock();
           }
@@ -852,7 +852,7 @@ final class Extractor {
             job.mutex.lock();
             try {
               j.ctx.printProgress(job.totalSize, job.totalDone);
-              j.ctx.emit(new Event.FileExtracted(Ctx.t(filename)));
+              j.ctx.emit(Event.FileExtracted.of(Ctx.t(filename)));
             } finally {
               job.mutex.unlock();
             }

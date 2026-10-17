@@ -95,52 +95,59 @@ The layers are separate: `jpaq-libzpaq` compresses, `jpaq-api` works on incremen
 command line is built on the public API of `jpaq-api` (module `io.github.scf37.jpaq`, package
 `io.github.scf37.jpaq`) and nothing else. Everything the zpaq command line does, the API does.
 
-`ZpaqArchive` is a handle to an archive: where it is (a `Storage` and a name), its password, the format
-it is written in, threads, the directory relative local names are resolved against, the clock and a
-listener. Each operation is one call:
+The API follows the style of the JDK's newer APIs (`java.lang.classfile`, `java.lang.foreign`): public
+types are interfaces with static factories (implementations are hidden), configuration is a list of
+`Option` values, and each operation takes a lambda that configures a short-lived builder, instead of
+option records with constructors of many arguments.
+
+`ZpaqArchive` is an immutable handle to an archive: where it is (a `Storage` and a name) and its options
+(password, format, threads, the directory relative local names are resolved against, the clock and a
+listener). Each operation is one call:
 
 ```java
-ZpaqArchive archive = ZpaqArchive.of(Path.of("/backup/home.zpaq")).withKey("secret")
-    .withListener(event -> log.debug("{}", event));
+ZpaqArchive archive = ZpaqArchive.of(Path.of("/backup/home.zpaq"),
+    Option.key("secret"), Option.listener(event -> log.debug("{}", event)));
 
 // a new version of local files: new and changed files are added, vanished ones deleted
-AddResult r = archive.add(AddOptions.of("/home/me").withMethod("2")
-    .withPrune(name -> name.endsWith("/.cache")));               // not even looked at
+AddResult r = archive.add(b -> b.files("/home/me").method("2")
+    .prune(name -> name.endsWith("/.cache")));                   // not even looked at
 
 // the file list of a version
-ArchiveContents c = archive.read(ReadOptions.LATEST.withVersion(-1L));   // or withDate(instant)
-for (ArchiveEntry e : c.entries()) System.out.println(e.name() + " " + e.size() + " " + e.lastModified());
+ArchiveContents c = archive.read(s -> s.version(-1));            // or s.until(instant)
+for (ArchiveContents.Entry e : c.entries()) System.out.println(e.name() + " " + e.size() + " " + e.lastModified());
 
 // extract (or test) a version, everything or a selection, wherever you want it
-archive.extract(new ExtractOptions(ReadOptions.LATEST.withSelect(n -> n.startsWith("/home/me/docs/")),
-    ExtractOptions.under("/restore"), false, false));
-archive.extract(ExtractOptions.DEFAULT.withTest(true));
+archive.extract(x -> x.select(n -> n.startsWith("/home/me/docs/")).under("/restore"));
+archive.extract(x -> x.test(true));
 
-archive.repack("docs.zpaq", "otherkey",         // selected files into a new archive
-    ExtractOptions.DEFAULT.withRead(ReadOptions.LATEST.withSelect(n -> n.startsWith("/home/me/docs/"))));
-archive.copy("plain.zpaq", null, false);        // the whole archive, decrypted
-archive.writeIndex("home.idx", false, ReadOptions.LATEST);
+archive.repack("docs.zpaq", p -> p.select(n -> n.startsWith("/home/me/docs/")).key("otherkey"));
+archive.copy("plain.zpaq", c -> { });           // the whole archive, decrypted
+archive.writeIndex("home.idx", i -> { });
 ```
 
+Specifications are plain `Consumer`s, so they can be kept and combined: a `Consumer<ArchiveSelector<?>>`
+(version, selection, index) works for `read`, `extract`, `repack` and `writeIndex` alike, and
+`spec.andThen(b -> b.date(t))` adds to an add specification.
+
 * **Names** are '/' separated, directories end with '/'. Which entries an operation sees, how local
-  names map to archive names (`AddOptions.archiveName`) and archive names to output names
-  (`ExtractOptions.output`, returning null skips) are plain predicates and functions: the command
+  names map to archive names (`AddBuilder.archiveName`) and archive names to output names
+  (`ExtractBuilder.output`, returning null skips) are plain predicates and functions: the command
   line implements zpaq's `files`, `-only`, `-not` and `-to` with them. Names that are not valid UTF-8
-  survive the round trip (see `Names`).
-* **Updates** (`AddOptions`): the `files` are scanned (`prune`: not looked at, `accept`: added), new files
+  survive the round trip (`ZpaqArchive.decodeName`/`encodeName`).
+* **Updates** (`AddBuilder`): the `files` are scanned (`prune`: not looked at, `accept`: added), new files
   and files whose date or size changed are added (`force`: all), and entries in the update's `scope`
   whose local file is gone are deleted (by default the scope is the archive names of `files`). Also:
   method (0..5, `x…`, streaming `s…`, index-only `i…`), fragment size, attributes, the update date,
   rolling back to an earlier version first, classic multi-part archives with an index, and the
   sequential format. A failed update leaves the archive as it was.
-* **Reading** (`ReadOptions`): a version (number, negative from the end, or date), every version of
-  every file (`versionDigits`, zpaq's `-all`), a selection, the file list from an index.
+* **Reading** (`ArchiveSelector`): a version (number, negative from the end, or date), every version of
+  every file (`allVersions`, zpaq's `-all`), a selection, the file list from an index.
   `ArchiveContents` has the entries with their fragments, the versions, the fragment table, and
-  `sameContent(entry, localFile)` to compare with local files; `LocalFiles.scan` shows the local side
+  `sameContent(entry, localFile)` to compare with local files; `ZpaqArchive.scan` shows the local side
   as an update sees it.
 * **Events** (`Event`, to the listener) are the progress and problems of an operation as data
-  (`FileAdded`, `FileExtracted`, `Progress`, `FileError`, `BlockSkipped`, `ExtractFailed`, ...); the
-  command line prints them as zpaq does. Results (`AddResult`, `ExtractResult`) count what was done and
+  (`FileAdded`, `FileExtracted`, `Progress`, `FileError`, `BlockSkipped`, `ExtractFailed`, ...): a sealed
+  hierarchy of interfaces, for exhaustive `switch`es; the command line prints them as zpaq does. Results (`AddResult`, `ExtractResult`) count what was done and
   what failed.
 * **Errors** are `IOException`s: `ArchiveException` for archives that are damaged, not archives, have
   another password, or don't fit the operation; `UnsupportedStorageException` (unchecked) when the
@@ -153,8 +160,9 @@ Archive files (parts/tomes and index files) are read and written through `Storag
 `read(name)`, `write(name)` and `delete(name)`, which is what a shell script can do, plus capabilities
 a storage may declare: `PROBE` (`exists`, `length`), `RANGED_READ` (start reading at an offset) and
 `RANDOM_WRITE` (positional read/write/truncate). A failed operation is just a failure: the archiver never
-interprets the reason. `LocalFsStorage` (all capabilities) is what the command line uses;
-`ShellStorage` runs three shell commands (`cat "$1"`, `aws s3 cp - "s3://bucket/$1"`, ...).
+interprets the reason. `Storage.ofDirectory` (all capabilities) is what the command line uses;
+`Storage.ofShell` runs three shell commands (`cat "$1"`, `aws s3 cp - "s3://bucket/$1"`, ...).
+Implement `Storage` for anything else.
 
 * `Format.CLASSIC`: the zpaq 7.15 format, byte identical to the C++ program. Writing needs `RANDOM_WRITE`
   and `PROBE` (the transaction header is patched at the end and empty updates are truncated).
@@ -163,11 +171,11 @@ interprets the reason. `LocalFsStorage` (all capabilities) is what the command l
   [docs/SEQUENTIAL.md](docs/SEQUENTIAL.md). Stock zpaq cannot read these archives (and says so cleanly).
 
 ```java
-Storage s3 = new ShellStorage("aws s3 cp \"s3://bkp/$1\" -", "aws s3 cp - \"s3://bkp/$1\"", "aws s3 rm \"s3://bkp/$1\"");
-ZpaqArchive a = ZpaqArchive.of(s3, "home???.jpaq").withFormat(Format.SEQUENTIAL).withKey(key);
-a.add(AddOptions.of("/home").withIndex("index-41.jpaq").withIndexOut("index-42.jpaq"));
+Storage s3 = Storage.ofShell(null, "aws s3 cp \"s3://bkp/$1\" -", "aws s3 cp - \"s3://bkp/$1\"", "aws s3 rm \"s3://bkp/$1\"");
+ZpaqArchive a = ZpaqArchive.of(s3, "home???.jpaq", Format.SEQUENTIAL, Option.key(key));
+a.add(b -> b.files("/home").index("index-41.jpaq").indexOut("index-42.jpaq"));
 // home042.jpaq is written, then index-42.jpaq; index-41.jpaq is not touched
-a.extract(ExtractOptions.DEFAULT.withRead(ReadOptions.LATEST.withIndex("index-42.jpaq")));
+a.extract(x -> x.index("index-42.jpaq"));
 ```
 
 The command line lists, tests and extracts jpaq archives (any file extension) but does not modify them:

@@ -8,32 +8,15 @@ import java.io.OutputStream;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
-/**
- * A storage made of three shell commands, as simple as a backup script: each is run with {@code
- * sh -c} and gets the blob name as {@code $1}.
- *
- * <ul>
- *   <li>read: writes the blob to its stdout, e.g. {@code cat "/backup/$1"}
- *   <li>write: reads the new blob from its stdin, e.g. {@code cat > "/backup/$1"} or {@code aws s3
- *       cp - "s3://bucket/$1"}
- *   <li>delete: removes the blob, e.g. {@code rm -f "/backup/$1"}
- * </ul>
- *
- * A command that fails (exit code not 0) makes the operation fail; the reason is not known, which
- * is all the archiver needs. No capabilities beyond streaming.
- */
-public final class ShellStorage implements Storage {
+/** {@link Storage#ofShell}. */
+final class ShellStorage implements Storage {
   private final String readCmd;
   private final String writeCmd;
   private final String deleteCmd;
   private final Path dir;
 
-  public ShellStorage(String readCmd, String writeCmd, String deleteCmd) {
-    this(readCmd, writeCmd, deleteCmd, null);
-  }
-
   /** @param dir working directory of the commands, null for the current one */
-  public ShellStorage(String readCmd, String writeCmd, String deleteCmd, Path dir) {
+  ShellStorage(String readCmd, String writeCmd, String deleteCmd, Path dir) {
     this.readCmd = readCmd;
     this.writeCmd = writeCmd;
     this.deleteCmd = deleteCmd;
