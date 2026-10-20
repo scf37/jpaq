@@ -2,6 +2,7 @@ package io.github.scf37.jpaq.engine;
 
 import io.github.scf37.jpaq.Storage.Capability;
 import io.github.scf37.jpaq.UnsupportedStorageException;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
 import io.github.scf37.jpaq.libzpaq.AesCtr;
 import io.github.scf37.jpaq.libzpaq.Crypto;
 import io.github.scf37.jpaq.libzpaq.ZpaqException;
@@ -75,7 +76,8 @@ final class InputArchive implements ZpaqReader, AutoCloseable {
     if (password != null) {
       byte[] salt = new byte[32];
       if (fp.read(salt, 0, 32) != 32) throw ZpaqException.error("cannot read salt");
-      byte[] key = Crypto.stretchKey(password, salt);
+      byte[] key = io.format == Format.CLASSIC ? Crypto.stretchKey(password, salt)
+          : Crypto.stretchKeySequential(password, salt);
       aes = new AesCtr(key, 32, salt);
       off = 32;
     }

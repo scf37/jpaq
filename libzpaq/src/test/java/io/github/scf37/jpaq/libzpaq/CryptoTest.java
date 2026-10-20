@@ -51,6 +51,19 @@ class CryptoTest {
   }
 
   @Test
+  void stretchKeySequential() {
+    byte[] key = new byte[32];
+    byte[] salt = new byte[32];
+    for (int i = 0; i < 32; i++) {
+      key[i] = (byte) i;
+      salt[i] = (byte) (100 + i);
+    }
+    // N=131072, r=8, p=1; expected value computed with OpenSSL's scrypt
+    assertArrayEquals(hex("9d7538579bc8262c0517a672d176543b838ffcd24d52d186b6c247c3b34f8bd4"),
+        Crypto.stretchKeySequential(key, salt));
+  }
+
+  @Test
   void aesCtrMatchesJce() throws Exception {
     Random rnd = new Random(1);
     for (int keylen : new int[] {16, 24, 32}) {

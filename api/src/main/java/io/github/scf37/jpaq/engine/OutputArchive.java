@@ -60,7 +60,8 @@ final class OutputArchive implements ZpaqWriter, AutoCloseable {
 
     // Set up encryption
     if (password != null) {
-      byte[] key = Crypto.stretchKey(password, salt);
+      byte[] key = io.format == Format.CLASSIC ? Crypto.stretchKey(password, salt)
+          : Crypto.stretchKeySequential(password, salt);
       aes = new AesCtr(key, 32, salt);
     }
   }

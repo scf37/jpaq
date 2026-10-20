@@ -28,6 +28,10 @@ with types `c`, `d`, `h`, `i`), with these differences:
   follow it directly and readers pass over them in the stream. The block is still 104 bytes (plus salt).
 * The `d`, `h`, `i` block bodies, the fragment IDs, the encryption (AES-CTR keyed by the offset in the virtual
   concatenation of all tomes) and the index are identical to the classic format. A test compares them.
+* **Key derivation.** The encryption key is `scrypt(SHA-256(password), salt, N=131072, r=8, p=1)`: 128 MiB and
+  about 0.4 s per tome or index opened. The classic format uses N=16384 (a constant of zpaq, not stored in the
+  archive), which keeps it readable by zpaq; sequential archives have no such constraint. Same salt layout
+  (32 bytes at the start of each tome and index).
 
 Tome = `C` `D`... `H`... `I`...; index segment of an update = `C` `H`... `I`... (same `H`/`I` bytes).
 

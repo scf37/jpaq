@@ -150,4 +150,17 @@ public final class Crypto {
     scrypt(key, 32, salt, 32, 1 << 14, 8, 1, out, 32);
     return out;
   }
+
+  /** scrypt cost (N) of the jpaq sequential format: 128 MiB, 8 times the zpaq format's. */
+  public static final int SEQUENTIAL_N = 1 << 17;
+
+  /**
+   * Same as {@link #stretchKey} for the jpaq sequential format, which does not have to stay readable
+   * by zpaq and so uses N=131072 (128 MiB, about 0.4 s) instead of 16384, r=8, p=1.
+   */
+  public static byte[] stretchKeySequential(byte[] key, byte[] salt) {
+    byte[] out = new byte[32];
+    scrypt(key, 32, salt, 32, SEQUENTIAL_N, 8, 1, out, 32);
+    return out;
+  }
 }
